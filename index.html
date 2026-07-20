@@ -187,7 +187,7 @@ async function initFirebase(){
     FB_DB = firebase.firestore();
     try{ await FB_DB.enablePersistence({synchronizeTabs:true}); }catch(e){ /* multi-tab or unsupported — ok */ }
     // فحص فعلي للكتابة والقراءة (يكشف مشكلة القواعد فورًا)
-    await withTimeout(FB_DB.collection('hr').doc('__ping__').set({t: Date.now()}), 15000, 'write-test');
+    await withTimeout(FB_DB.collection('hr').doc('connection_ping').set({t: Date.now()}), 15000, 'write-test');
     FB_READY = true;
     FB_STATUS = {ok:true, code:'ready', msg:'متصل بالسيرفر'};
   }catch(e){
@@ -259,7 +259,7 @@ function startLiveSync(){
    CONSTANTS
 ========================================================= */
 const TARGET_LAT = 31.9395125, TARGET_LNG = 35.9532656, GEOFENCE_M = 200;
-const APP_VERSION = "5.2";
+const APP_VERSION = "5.3";
 const ADMIN_PASSWORD = "445566";
 const SUPERVISOR_USER = "supervisor", SUPERVISOR_PASSWORD = "7890";
 const WORK_START = "08:00";
@@ -715,8 +715,8 @@ async function openDiagnosticsModal(){
     if(authOk){
       try{
         const db = FB_DB || firebase.firestore();
-        await withTimeout(db.collection('hr').doc('__ping__').set({t: Date.now()}), 10000, 'write');
-        writeOk = true; writeDetail = 'hr/__ping__';
+        await withTimeout(db.collection('hr').doc('connection_ping').set({t: Date.now()}), 10000, 'write');
+        writeOk = true; writeDetail = 'hr/connection_ping';
       }catch(e){ writeOk = false; writeDetail = (e.code||e.message||'?'); }
       try{
         const db = FB_DB || firebase.firestore();
