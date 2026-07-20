@@ -259,6 +259,7 @@ function startLiveSync(){
    CONSTANTS
 ========================================================= */
 const TARGET_LAT = 31.9395125, TARGET_LNG = 35.9532656, GEOFENCE_M = 200;
+const APP_VERSION = "5.2";
 const ADMIN_PASSWORD = "445566";
 const SUPERVISOR_USER = "supervisor", SUPERVISOR_PASSWORD = "7890";
 const WORK_START = "08:00";
@@ -695,9 +696,53 @@ function render(){
    LOGIN
 ========================================================= */
 function fbStatusChip(){
-  return `<div id="fbChip" style="display:flex;align-items:center;gap:6px;justify-content:center;margin:10px auto 0;max-width:400px;font-size:11px;font-weight:700;color:${FB_STATUS.ok?'#1f8f63':'var(--danger)'};background:${FB_STATUS.ok?'#e8f7ef':'#fdecec'};border:1px solid ${FB_STATUS.ok?'#bfe8d2':'#f5c6c6'};border-radius:20px;padding:6px 12px;line-height:1.7;text-align:center">
-    ${FB_STATUS.ok?'🟢':'🔴'} ${esc(FB_STATUS.msg)}
-  </div>`;
+  return `<div id="fbChip" onclick="openDiagnosticsModal()" style="cursor:pointer;display:flex;align-items:center;gap:6px;justify-content:center;margin:10px auto 0;max-width:400px;font-size:11px;font-weight:700;color:${FB_STATUS.ok?'#1f8f63':'var(--danger)'};background:${FB_STATUS.ok?'#e8f7ef':'#fdecec'};border:1px solid ${FB_STATUS.ok?'#bfe8d2':'#f5c6c6'};border-radius:20px;padding:6px 12px;line-height:1.7;text-align:center">
+    ${FB_STATUS.ok?'🟢':'🔴'} ${esc(FB_STATUS.msg)} <span style="opacity:.6">· اضغط للفحص</span>
+  </div>
+  <div style="text-align:center;font-size:9.5px;color:#bbb;margin-top:4px">الإصدار ${APP_VERSION}</div>`;
+}
+async function openDiagnosticsModal(){
+  const rows = [];
+  const add = (label, ok, detail)=>rows.push(`<div class="row"><span class="lbl">${label}${detail?`<br><small style="color:#999;direction:ltr;display:inline-block">${esc(detail)}</small>`:''}</span><span class="pill ${ok===true?'green':ok===false?'red':'orange'}">${ok===true?'✅':ok===false?'❌':'⏳'}</span></div>`);
+  add('إصدار التطبيق', true, 'v'+APP_VERSION);
+  add('تحميل مكتبات Firebase', typeof firebase !== 'undefined', typeof firebase !== 'undefined' ? '' : 'SDK not loaded — امسح الكاش أو تحقق من الإنترنت');
+  let authOk = null, writeOk = null, readOk = null, authDetail='', writeDetail='', readDetail='';
+  if(typeof firebase !== 'undefined'){
+    try{
+      await withTimeout(firebase.auth().signInAnonymously(), 10000, 'auth');
+      authOk = true; authDetail = 'anonymous uid: '+(firebase.auth().currentUser?firebase.auth().currentUser.uid.slice(0,8)+'…':'?');
+    }catch(e){ authOk = false; authDetail = (e.code||e.message||'?'); }
+    if(authOk){
+      try{
+        const db = FB_DB || firebase.firestore();
+        await withTimeout(db.collection('hr').doc('__ping__').set({t: Date.now()}), 10000, 'write');
+        writeOk = true; writeDetail = 'hr/__ping__';
+      }catch(e){ writeOk = false; writeDetail = (e.code||e.message||'?'); }
+      try{
+        const db = FB_DB || firebase.firestore();
+        const d = await withTimeout(db.collection('hr').doc('employees__0').get(), 10000, 'read');
+        readOk = true; readDetail = d.exists ? 'بيانات الموظفين موجودة على السيرفر' : '⚠️ لا يوجد بيانات موظفين على السيرفر بعد — اعمل استعادة نسخة';
+      }catch(e){ readOk = false; readDetail = (e.code||e.message||'?'); }
+    }
+  }
+  add('تسجيل الدخول للسيرفر (Anonymous)', authOk, authDetail);
+  add('الكتابة على قاعدة البيانات', writeOk, writeDetail);
+  add('قراءة بيانات الموظفين', readOk, readDetail);
+  const allOk = authOk===true && writeOk===true;
+  showModal(`
+    <div class="modal-head"><h3>🩺 فحص الاتصال بالسيرفر</h3><button class="modal-close" data-close>✕</button></div>
+    ${rows.join('')}
+    <div class="note" style="margin-top:10px;${allOk?'':'border-color:var(--danger)'}">
+      ${allOk ? '🟢 كل شيء سليم — إذا كانت المشكلة مستمرة أعد فتح التطبيق.' : '🔴 '+fbErrorHelp(authOk===false?authDetail:writeDetail)}
+    </div>
+    <button class="btn" id="reconnectBtn">🔄 إعادة الاتصال الآن</button>
+  `, true);
+  document.getElementById('reconnectBtn').onclick = async ()=>{
+    closeModal(); toast('⏳ جاري إعادة الاتصال...');
+    await initFirebase();
+    if(FB_READY){ await init(); toast('🟢 تم الاتصال وإعادة تحميل البيانات ✅'); }
+    else { toast('🔴 '+FB_STATUS.msg); render(); }
+  };
 }
 function loginView(){
   const isAr = state.lang==='ar';
@@ -720,7 +765,7 @@ function loginView(){
         <label class="field-label">${T('empId')}</label>
         <input id="loginId" type="text" inputmode="numeric" placeholder="${isAr?'مثال: 4':'e.g. 4'}">
         <label class="field-label">${T('pin')}</label>
-        <input id="loginPin" type="password" inputmode="numeric" maxlength="4" placeholder="••••">
+        <input id="loginPin" type="password" inputmode="numeric" maxlength="6" placeholder="••••">
       ` : state.loginRole==='supervisor' ? `
         <label class="field-label">${T('user')}</label><input id="loginUser" type="text" value="supervisor">
         <label class="field-label">${T('pass')}</label><input id="loginPass" type="password" placeholder="••••">
@@ -2120,7 +2165,7 @@ function openEmployeeForm(id){
     </div>
 
     <div class="section-title">دخول التطبيق</div>
-    <div class="field"><label class="field-label">الرمز السري (4 أرقام)</label><input id="f_pin" maxlength="4" inputmode="numeric" value="${emp?emp.pin:'1234'}"></div>
+    <div class="field"><label class="field-label">الرمز السري (4-6 أرقام)</label><input id="f_pin" maxlength="6" inputmode="numeric" value="${emp?emp.pin:'1234'}"></div>
 
     <div class="btnrow">
       <button class="btn" id="saveEmpBtn">${emp?'حفظ التعديلات':'إضافة الموظف'}</button>
@@ -2848,7 +2893,8 @@ async function importFromExcel(ev){
       }
       if(!empWs && !holWs){ toast('⚠️ لم أجد شيت "الموظفون" أو "العطل الرسمية" في الملف'); return; }
       await audit('رفع إكسل', `تحديث ${updated} موظف · إضافة ${added} موظف${holReplaced?' · تحديث العطل الرسمية':''}`);
-      toast(`تم الرفع ✅ — تحديث ${updated} · إضافة ${added}${holReplaced?' · العطل محدّثة':''}`);
+      if(FB_READY) toast(`تم الرفع للسيرفر ✅ — تحديث ${updated} · إضافة ${added}${holReplaced?' · العطل محدّثة':''}`);
+      else toast('⚠️ الملف قُرئ لكن لا يوجد اتصال بالسيرفر — التغييرات محلية فقط! اضغط على المؤشر الأحمر للفحص');
       render();
     }catch(e){ console.error(e); toast('فشل قراءة الملف: '+e.message); }
   };
