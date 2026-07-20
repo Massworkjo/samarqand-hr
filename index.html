@@ -162,16 +162,39 @@ const firebaseConfig = {
   appId: "1:861740278896:web:0c6a0fe146ab7b7baf40b5"
 };
 let FB_DB = null, FB_READY = false;
+let FB_STATUS = {ok:false, code:'init', msg:'جاري الاتصال...'};
+function withTimeout(promise, ms, label){
+  return Promise.race([promise, new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout:'+label)), ms))]);
+}
+function fbErrorHelp(code){
+  if(!code) return 'خطأ غير معروف';
+  if(String(code).includes('operation-not-allowed') || String(code).includes('configuration-not-found') || String(code).includes('admin-restricted'))
+    return '❗ تسجيل الدخول المجهول غير مفعّل. الحل: Firebase → Authentication → Sign-in method → Anonymous → Enable → Save';
+  if(String(code).includes('permission-denied') || String(code).includes('PERMISSION_DENIED'))
+    return '❗ قواعد الحماية غير منشورة. الحل: Firebase → Firestore Database → Rules → الصق القواعد → Publish';
+  if(String(code).includes('unavailable') || String(code).includes('timeout') || String(code).includes('network'))
+    return '📶 مشكلة إنترنت — تأكد من الاتصال وأعد فتح التطبيق';
+  if(String(code).includes('api-key'))
+    return '❗ مفتاح API غير صحيح — راجع firebaseConfig';
+  return 'رمز الخطأ: '+code;
+}
 async function initFirebase(){
   try{
+    if(typeof firebase === 'undefined') throw {code:'network:sdk-not-loaded'};
     firebase.initializeApp(firebaseConfig);
-    await firebase.auth().signInAnonymously();
+    FB_STATUS = {ok:false, code:'auth', msg:'جاري تسجيل الدخول...'};
+    await withTimeout(firebase.auth().signInAnonymously(), 15000, 'auth');
     FB_DB = firebase.firestore();
     try{ await FB_DB.enablePersistence({synchronizeTabs:true}); }catch(e){ /* multi-tab or unsupported — ok */ }
+    // فحص فعلي للكتابة والقراءة (يكشف مشكلة القواعد فورًا)
+    await withTimeout(FB_DB.collection('hr').doc('__ping__').set({t: Date.now()}), 15000, 'write-test');
     FB_READY = true;
+    FB_STATUS = {ok:true, code:'ready', msg:'متصل بالسيرفر'};
   }catch(e){
     console.error('Firebase init failed:', e);
     FB_READY = false;
+    const code = (e && (e.code || e.message)) || 'unknown';
+    FB_STATUS = {ok:false, code, msg: fbErrorHelp(code)};
   }
 }
 const FB_CHUNK = 800000; // حجم القطعة الواحدة (حد المستند 1MB)
@@ -186,11 +209,11 @@ async function fbSave(key, data){
   chunks.forEach((c,i)=> batch.set(FB_DB.collection('hr').doc(base+'__'+i), {v:c, n:chunks.length, t:Date.now()}));
   // احذف القطع الزائدة من حفظ سابق أكبر
   for(let i=chunks.length;i<chunks.length+5;i++) batch.delete(FB_DB.collection('hr').doc(base+'__'+i));
-  await batch.commit();
+  await withTimeout(batch.commit(), 15000, 'save');
 }
 async function fbLoad(key){
   const base = fbKey(key);
-  const first = await FB_DB.collection('hr').doc(base+'__0').get();
+  const first = await withTimeout(FB_DB.collection('hr').doc(base+'__0').get(), 15000, 'load');
   if(!first.exists) throw new Error('no key');
   const n = first.data().n || 1;
   let json = first.data().v;
@@ -671,6 +694,11 @@ function render(){
 /* =========================================================
    LOGIN
 ========================================================= */
+function fbStatusChip(){
+  return `<div id="fbChip" style="display:flex;align-items:center;gap:6px;justify-content:center;margin:10px auto 0;max-width:400px;font-size:11px;font-weight:700;color:${FB_STATUS.ok?'#1f8f63':'var(--danger)'};background:${FB_STATUS.ok?'#e8f7ef':'#fdecec'};border:1px solid ${FB_STATUS.ok?'#bfe8d2':'#f5c6c6'};border-radius:20px;padding:6px 12px;line-height:1.7;text-align:center">
+    ${FB_STATUS.ok?'🟢':'🔴'} ${esc(FB_STATUS.msg)}
+  </div>`;
+}
 function loginView(){
   const isAr = state.lang==='ar';
   return `
@@ -681,6 +709,7 @@ function loginView(){
       <h1>${isAr?'سمرقند':'Samarqand'}</h1>
       <p>${T('loginTitle')}</p>
     </div>
+    ${fbStatusChip()}
     <div class="role-tabs">
       <button data-role="employee" class="${state.loginRole==='employee'?'active':''}">${T('employee')}</button>
       <button data-role="supervisor" class="${state.loginRole==='supervisor'?'active':''}">${T('supervisor')}</button>
@@ -1270,16 +1299,19 @@ function openMughadaraModal(){
     if(dur>180){ toast('الحد الأقصى للمغادرة 3 ساعات باليوم'); return; }
     if(!reason){ toast('اكتب سبب المغادرة'); return; }
     const endT = minToTime(timeToMin(startT)+dur);
-    state.mughadarat.push({id:'MUG-'+Date.now(), employeeId: emp.id, employeeName: emp.name,
-      date: todayStr(), startTime: startT, endTime: endT, durationMin: dur,
-      timing: document.getElementById('mugTiming').value, reason, auto:false,
-      status:'قيد المراجعة', needsSup: isRep, supStatus: isRep?'قيد المراجعة':'—', admStatus:'قيد المراجعة', deductSource:null});
-    await save('sq:mughadarat', state.mughadarat);
-    await audit('طلب مغادرة', `${emp.name}: ${startT}→${endT} (${fmtDur(dur)}) — ${reason}`);
-    const targets = isRep ? ['admin','supervisor'] : ['admin'];
-    const mugId = state.mughadarat[state.mughadarat.length-1].id;
-    await notify(targets, '⏱️ طلب مغادرة جديد', `${emp.name}: من ${startT} إلى ${endT} (${fmtDur(dur)}) — ${reason}`, null, {k:'mug', id:mugId});
-    closeModal(); toast('تم إرسال طلب المغادرة ✅'); render();
+    const btn = document.getElementById('submitMugBtn'); btn.disabled = true; btn.textContent = '⏳ جاري الإرسال...';
+    try{
+      state.mughadarat.push({id:'MUG-'+Date.now(), employeeId: emp.id, employeeName: emp.name,
+        date: todayStr(), startTime: startT, endTime: endT, durationMin: dur,
+        timing: document.getElementById('mugTiming').value, reason, auto:false,
+        status:'قيد المراجعة', needsSup: isRep, supStatus: isRep?'قيد المراجعة':'—', admStatus:'قيد المراجعة', deductSource:null});
+      await save('sq:mughadarat', state.mughadarat);
+      await audit('طلب مغادرة', `${emp.name}: ${startT}→${endT} (${fmtDur(dur)}) — ${reason}`);
+      const targets = isRep ? ['admin','supervisor'] : ['admin'];
+      const mugId = state.mughadarat[state.mughadarat.length-1].id;
+      await notify(targets, '⏱️ طلب مغادرة جديد', `${emp.name}: من ${startT} إلى ${endT} (${fmtDur(dur)}) — ${reason}`, null, {k:'mug', id:mugId});
+    }catch(e){ console.error(e); }
+    closeModal(); toast(FB_READY?'تم إرسال طلب المغادرة ✅':'⚠️ أُرسل محليًا — لا يوجد اتصال بالسيرفر!'); render();
   };
 }
 
@@ -1304,15 +1336,18 @@ function openRequestAdvanceModal(){
     if(!amt || amt<=0){ toast('أدخل مبلغًا صحيحًا'); return; }
     if(amt > monthlyAdvCap(emp)){ toast('المبلغ يتجاوز الحد الشهري المسموح'); return; }
     const isRep = emp.category==='مندوب';
-    state.advances.push({id:'ADV-'+Date.now(), employeeId: emp.id, employeeName: emp.name, amount: amt,
-      installments: null, frequency: null, installmentAmount: null, remainingInstallments: null,
-      note: document.getElementById('advNote').value, date: todayStr(), status:'قيد المراجعة',
-      needsSup: isRep, supStatus: isRep?'قيد المراجعة':'—', admStatus:'قيد المراجعة'});
-    await save('sq:advances', state.advances);
-    await audit('طلب سلفة', `${emp.name}: ${amt} د.أ`);
-    const advId = state.advances[state.advances.length-1].id;
-    await notify(isRep?['admin','supervisor']:['admin'], '💵 طلب سلفة جديد', `${emp.name} طلب سلفة بقيمة ${amt} د.أ${isRep?' (مندوب — تحتاج موافقة المشرف والمدير)':''}`, null, {k:'adv', id:advId});
-    closeModal(); toast('تم إرسال طلب السلفة ✅'); render();
+    const btnA = document.getElementById('submitAdvBtn'); if(btnA){ btnA.disabled = true; btnA.textContent = '⏳ جاري الإرسال...'; }
+    try{
+      state.advances.push({id:'ADV-'+Date.now(), employeeId: emp.id, employeeName: emp.name, amount: amt,
+        installments: null, frequency: null, installmentAmount: null, remainingInstallments: null,
+        note: document.getElementById('advNote').value, date: todayStr(), status:'قيد المراجعة',
+        needsSup: isRep, supStatus: isRep?'قيد المراجعة':'—', admStatus:'قيد المراجعة'});
+      await save('sq:advances', state.advances);
+      await audit('طلب سلفة', `${emp.name}: ${amt} د.أ`);
+      const advId = state.advances[state.advances.length-1].id;
+      await notify(isRep?['admin','supervisor']:['admin'], '💵 طلب سلفة جديد', `${emp.name} طلب سلفة بقيمة ${amt} د.أ${isRep?' (مندوب — تحتاج موافقة المشرف والمدير)':''}`, null, {k:'adv', id:advId});
+    }catch(e){ console.error(e); }
+    closeModal(); toast(FB_READY?'تم إرسال طلب السلفة ✅':'⚠️ أُرسل محليًا — لا يوجد اتصال بالسيرفر!'); render();
   };
 }
 
@@ -1337,15 +1372,19 @@ function openRequestLeaveModal(){
     if(!details){ toast('اكتب تفاصيل الإجازة وسبب الطلب'); return; }
     const days = daysBetween(start, end);
     const isRep = emp.category==='مندوب';
-    state.leaveRequests.push({id:'LV-'+Date.now(), employeeId: emp.id, employeeName: emp.name,
-      type: document.getElementById('lvType').value, startDate: start, endDate: end, days, details,
-      status:'قيد المراجعة', requestDate: todayStr(),
-      needsSup: isRep, supStatus: isRep?'قيد المراجعة':'—', admStatus:'قيد المراجعة', deductSource:null});
-    await save('sq:leaveRequests', state.leaveRequests);
-    await audit('طلب إجازة', `${emp.name}: ${document.getElementById('lvType').value} ${start}→${end} (${days} يوم)`);
-    const lvId = state.leaveRequests[state.leaveRequests.length-1].id;
-    await notify(isRep?['admin','supervisor']:['admin'], '🌴 طلب إجازة جديد', `${emp.name}: ${document.getElementById('lvType').value} من ${start} إلى ${end} (${days} يوم)${isRep?' — مندوب: تحتاج موافقة المشرف والمدير':''}`, null, {k:'lv', id:lvId});
-    closeModal(); toast('تم إرسال طلب الإجازة ✅'); render();
+    const lvTypeVal = document.getElementById('lvType').value;
+    const btnL = document.getElementById('submitLvBtn'); if(btnL){ btnL.disabled = true; btnL.textContent = '⏳ جاري الإرسال...'; }
+    try{
+      state.leaveRequests.push({id:'LV-'+Date.now(), employeeId: emp.id, employeeName: emp.name,
+        type: lvTypeVal, startDate: start, endDate: end, days, details,
+        status:'قيد المراجعة', requestDate: todayStr(),
+        needsSup: isRep, supStatus: isRep?'قيد المراجعة':'—', admStatus:'قيد المراجعة', deductSource:null});
+      await save('sq:leaveRequests', state.leaveRequests);
+      await audit('طلب إجازة', `${emp.name}: ${lvTypeVal} ${start}→${end} (${days} يوم)`);
+      const lvId = state.leaveRequests[state.leaveRequests.length-1].id;
+      await notify(isRep?['admin','supervisor']:['admin'], '🌴 طلب إجازة جديد', `${emp.name}: ${lvTypeVal} من ${start} إلى ${end} (${days} يوم)${isRep?' — مندوب: تحتاج موافقة المشرف والمدير':''}`, null, {k:'lv', id:lvId});
+    }catch(e){ console.error(e); }
+    closeModal(); toast(FB_READY?'تم إرسال طلب الإجازة ✅':'⚠️ أُرسل محليًا — لا يوجد اتصال بالسيرفر!'); render();
   };
 }
 
@@ -1642,6 +1681,8 @@ function adminSettings(){
   return `
     <div class="card">
       <h3>🛠️ أدوات النظام</h3>
+      ${fbStatusChip()}
+      <div style="height:8px"></div>
       <div class="grid2">
         <button class="btn small" id="exportXlsxBtn" style="width:100%">📊 تنزيل إكسل شامل</button>
         <button class="btn small" id="importXlsxBtn" style="width:100%">📤 رفع إكسل معدّل</button>
