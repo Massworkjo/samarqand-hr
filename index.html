@@ -3,6 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#1f8a8a">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="سمرقند HR">
 <title>سمرقند | نظام الموارد البشرية</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&display=swap" rel="stylesheet">
@@ -334,6 +340,7 @@ const state = {
   employees: [], attendance: [], advances: [], violations: [], custody: [], transfers: [],
   leaveRequests: [], deductions: [], bonuses: [],
   notifications: [], mughadarat: [], holidays: [], audit: [],
+  config: null,
   lang: 'ar',
   role: null, currentEmployee: null, screen: 'login', loginRole: 'employee',
   search: '', editingEmployeeId: null, detailEmployeeId: null, prevScreen: 'employees',
@@ -639,6 +646,7 @@ async function init(){
   if(reqMigrated){ await save('sq:advances', state.advances); await save('sq:leaveRequests', state.leaveRequests); }
   state.deductions = await loadOrInit('sq:deductions', []);
   state.bonuses = await loadOrInit('sq:bonuses', []);
+  state.config = await loadOrInit('sq:config', {adminPassword: ADMIN_PASSWORD, supervisorUser: SUPERVISOR_USER, supervisorPassword: SUPERVISOR_PASSWORD, focusProduct: null});
   state.notifications = await loadOrInit('sq:notifications', []);
   state.mughadarat = await loadOrInit('sq:mughadarat', []);
   state.holidays = await loadOrInit('sq:holidays', SEED_HOLIDAYS);
@@ -647,6 +655,7 @@ async function init(){
   startWatchers();
   startLiveSync();
   render();
+  if('serviceWorker' in navigator){ try{ navigator.serviceWorker.register('sw.js'); }catch(e){} }
 }
 
 /* =========================================================
@@ -713,10 +722,10 @@ function doLogin(){
   const errEl = document.getElementById('loginErr'); errEl.textContent='';
   if(state.loginRole==='admin'){
     const pass = document.getElementById('loginPass').value;
-    if(pass===ADMIN_PASSWORD){ state.role='admin'; state.screen='employees'; render(); requestNotifPermission(); showPendingApprovalsModal(); } else errEl.textContent = state.lang==='ar'?'كلمة المرور غير صحيحة':'Incorrect password';
+    if(pass===(state.config?state.config.adminPassword:ADMIN_PASSWORD)){ state.role='admin'; state.screen='employees'; render(); requestNotifPermission(); showPendingApprovalsModal(); } else errEl.textContent = state.lang==='ar'?'كلمة المرور غير صحيحة':'Incorrect password';
   } else if(state.loginRole==='supervisor'){
     const user = document.getElementById('loginUser').value.trim(), pass = document.getElementById('loginPass').value;
-    if(user===SUPERVISOR_USER && pass===SUPERVISOR_PASSWORD){ state.role='supervisor'; state.screen='home'; render(); requestNotifPermission(); showPendingApprovalsModal(); } else errEl.textContent = state.lang==='ar'?'بيانات الدخول غير صحيحة':'Invalid credentials';
+    if(user===(state.config?state.config.supervisorUser:SUPERVISOR_USER) && pass===(state.config?state.config.supervisorPassword:SUPERVISOR_PASSWORD)){ state.role='supervisor'; state.screen='home'; render(); requestNotifPermission(); showPendingApprovalsModal(); } else errEl.textContent = state.lang==='ar'?'بيانات الدخول غير صحيحة':'Invalid credentials';
   } else {
     const id = document.getElementById('loginId').value.trim(), pin = document.getElementById('loginPin').value.trim();
     const emp = findEmp(id);
@@ -766,9 +775,15 @@ async function doBiometricLogin(){
 }
 
 /* ========== Daily product popup (sales reminder) ========== */
+function focusOrRotationProduct(){
+  const fp = state.config && state.config.focusProduct;
+  if(fp && fp.date===todayStr() && DAILY_PRODUCTS[fp.idx]) return {p: DAILY_PRODUCTS[fp.idx], focus:true};
+  return null;
+}
 function showDailyProductAd(){
   const dayOfYear = Math.floor((new Date() - new Date(new Date().getFullYear(),0,0)) / 86400000);
-  const p = DAILY_PRODUCTS[dayOfYear % DAILY_PRODUCTS.length];
+  const focus = focusOrRotationProduct();
+  const p = focus ? focus.p : DAILY_PRODUCTS[dayOfYear % DAILY_PRODUCTS.length];
   const isAr = state.lang==='ar';
   setTimeout(()=>{
     showModal(`
@@ -778,7 +793,7 @@ function showDailyProductAd(){
         <div style="font-size:19px;font-weight:800;color:var(--teal-dark)">${esc(p.name)}</div>
         <div style="font-size:12px;color:var(--orange-dark);font-weight:700;margin:2px 0 8px">${esc(p.brand)}</div>
         <p style="font-size:13px;color:var(--muted);line-height:1.8;margin:0 0 12px">${esc(p.line)}</p>
-        <p style="font-size:11px;color:var(--muted);margin:0 0 12px">${isAr?'تذكير يومي — ركّز على هذا المنتج بمبيعات اليوم 💪':'Daily reminder — push this product in sales today 💪'}</p>
+        <p style="font-size:11px;color:${focus?'var(--orange-dark)':'var(--muted)'};font-weight:${focus?'800':'400'};margin:0 0 12px">${focus?'⭐ '+(isAr?'اختيار المدير لهذا اليوم — ركزوا عليه بالبيع!':'Manager\'s pick for today — push it!'):(isAr?'تذكير يومي — ركّز على هذا المنتج بمبيعات اليوم 💪':'Daily reminder — push this product in sales today 💪')}</p>
         <a href="${CONTACT.instagram}" target="_blank" class="linklike" style="font-size:12px">📸 Instagram: samarqand.mena</a>
       </div>
       <button class="btn orange" data-close style="margin-top:12px">${T('gotIt')}</button>
@@ -1629,6 +1644,10 @@ function adminSettings(){
       <h3>🛠️ أدوات النظام</h3>
       <div class="grid2">
         <button class="btn small" id="exportXlsxBtn" style="width:100%">📊 تنزيل إكسل شامل</button>
+        <button class="btn small" id="importXlsxBtn" style="width:100%">📤 رفع إكسل معدّل</button>
+        <input type="file" id="importXlsxFile" accept=".xlsx,.xls" style="display:none">
+        <button class="btn small orange" id="focusProductBtn" style="width:100%">⭐ منتج التركيز اليوم</button>
+        <button class="btn small orange" id="passwordsBtn" style="width:100%">🔐 كلمات السر</button>
         <button class="btn small orange" id="otReportBtn" style="width:100%">⏰ تقرير الإضافي</button>
         <button class="btn small" id="holidaysBtn" style="width:100%">📅 العطل الرسمية</button>
         <button class="btn small" id="auditBtn" style="width:100%">📜 سجل التدقيق</button>
@@ -1667,7 +1686,7 @@ function employeeDetailScreen(emp){
           <input type="file" id="detPhotoFile" accept="image/*" style="display:none">
         </div>
       </div>
-      <h3>${esc(emp.name)} <button class="btn small outline" id="editEmpFromDetailBtn">تعديل البيانات</button></h3>
+      <h3>${esc(emp.name)} <button class="btn small outline" id="editEmpFromDetailBtn">تعديل البيانات</button> <button class="btn small outline" id="detPinBtn">🔐 الرقم السري</button></h3>
       <div class="row"><span class="lbl">الرقم الوظيفي</span><span class="val">#${emp.id}</span></div>
       <div class="row"><span class="lbl">الوظيفة</span><span class="val">${esc(emp.jobTitle)}</span></div>
       <div class="row"><span class="lbl">القسم</span><span class="val">${esc(emp.department)}</span></div>
@@ -1888,11 +1907,16 @@ function attachAdminEvents(){
   const holidaysBtn = document.getElementById('holidaysBtn'); if(holidaysBtn) holidaysBtn.onclick = openHolidaysModal;
   const auditBtn = document.getElementById('auditBtn'); if(auditBtn) auditBtn.onclick = openAuditModal;
   const otReportBtn = document.getElementById('otReportBtn'); if(otReportBtn) otReportBtn.onclick = openOvertimeReport;
+  const importXlsxBtn = document.getElementById('importXlsxBtn'); if(importXlsxBtn) importXlsxBtn.onclick = ()=>document.getElementById('importXlsxFile').click();
+  const importXlsxFile = document.getElementById('importXlsxFile'); if(importXlsxFile) importXlsxFile.onchange = importFromExcel;
+  const focusProductBtn = document.getElementById('focusProductBtn'); if(focusProductBtn) focusProductBtn.onclick = openFocusProductModal;
+  const passwordsBtn = document.getElementById('passwordsBtn'); if(passwordsBtn) passwordsBtn.onclick = openPasswordsModal;
   const backBtn = document.getElementById('detailBackBtn'); if(backBtn) backBtn.onclick = ()=>{ state.screen = state.prevScreen; render(); };
   const editFromDetail = document.getElementById('editEmpFromDetailBtn'); if(editFromDetail) editFromDetail.onclick = ()=>openEmployeeForm(state.detailEmployeeId);
   const saveSalaryBtn = document.getElementById('saveSalaryBtn'); if(saveSalaryBtn) saveSalaryBtn.onclick = saveDetailSalary;
   const saveWorkHoursBtn = document.getElementById('saveWorkHoursBtn'); if(saveWorkHoursBtn) saveWorkHoursBtn.onclick = saveDetailWorkHours;
   const detPhotoBtn = document.getElementById('detPhotoBtn'); if(detPhotoBtn) detPhotoBtn.onclick = ()=>document.getElementById('detPhotoFile').click();
+  const detPinBtn = document.getElementById('detPinBtn'); if(detPinBtn) detPinBtn.onclick = ()=>openChangePinModal(state.detailEmployeeId);
   const detPhotoFile = document.getElementById('detPhotoFile');
   if(detPhotoFile) detPhotoFile.onchange = async ev=>{
     const f = ev.target.files[0]; if(!f) return;
@@ -2495,7 +2519,7 @@ async function exportAllToExcel(){
     'نوع التوظيف':e.employmentType,'الحالة':e.status,'تاريخ التعيين':e.hireDate,'الرقم الوطني':e.nationalId,
     'الهاتف':e.phone,'المحافظة':e.governorate,'العنوان':e.address,'المشرف':e.supervisor,
     'الراتب الأساسي':e.baseSalary,'بدلات':e.otherAllowances||0,'تأمين صحي':e.healthInsurance||0,
-    'بداية الدوام':empWorkStart(e),'نهاية الدوام':empWorkEnd(e),
+    'بداية الدوام':empWorkStart(e),'نهاية الدوام':empWorkEnd(e),'الرقم السري':e.pin,
     'سقف السنوية':annualCap(e),'مستخدم سنوية':e.leaveUsed||0,'متبقي سنوية':annualRemaining(e),
     'سقف المرضية':sickCap(e),'مستخدم مرضية':e.sickLeaveUsed||0,'متبقي مرضية':sickRemaining(e),
     'حد السلفة الأسبوعي':weeklyAdvCap(e),'حد السلفة الشهري':monthlyAdvCap(e),
@@ -2636,6 +2660,158 @@ function openOvertimeReport(){
     <div class="section-title">التفاصيل (الوقت والتاريخ)</div>
     ${otRecs.slice(0,40).map(r=>`<div class="row"><span class="lbl">${r.date} — ${esc(r.employeeName)}<br><small style="color:#999">${r.timeIn||''} → ${r.timeOut||''} · معدل ${r.overtimeRate||OVERTIME_RATE}${r.holiday?(' · '+esc(r.holiday)):''}</small></span><span class="val" style="color:#1f8f63">${fmtDur(r.overtimeMinutes)} · +${r.overtimePay} د.أ</span></div>`).join('')}
   `, true);
+}
+
+/* ---------- 🔐 إدارة كلمات السر (أدمن فقط) ---------- */
+function openPasswordsModal(){
+  showModal(`
+    <div class="modal-head"><h3>🔐 كلمات السر</h3><button class="modal-close" data-close>✕</button></div>
+    <div class="section-title">حسابات الإدارة</div>
+    <label class="field-label">كلمة سر المدير</label>
+    <input id="cfgAdminPass" value="${esc(state.config.adminPassword)}">
+    <div class="grid2">
+      <div class="field"><label class="field-label">اسم مستخدم المشرف</label><input id="cfgSupUser" value="${esc(state.config.supervisorUser)}"></div>
+      <div class="field"><label class="field-label">كلمة سر المشرف</label><input id="cfgSupPass" value="${esc(state.config.supervisorPassword)}"></div>
+    </div>
+    <button class="btn" id="saveCfgPassBtn">حفظ كلمات سر الإدارة</button>
+    <div class="section-title">الأرقام السرية للموظفين</div>
+    <p style="font-size:11px;color:var(--muted);margin:0 0 8px">اضغط على أي موظف لتغيير رقمه السري فورًا (أو غيّرها جماعيًا عبر ملف الإكسل — عمود "الرقم السري").</p>
+    ${state.employees.map(e=>`
+      <div class="row" data-pinemp="${e.id}" style="cursor:pointer">
+        <span class="lbl">${esc(e.name)} <small style="color:#999">#${e.id}</small></span>
+        <span class="val">••••  ›</span>
+      </div>`).join('')}
+  `, true);
+  document.getElementById('saveCfgPassBtn').onclick = async ()=>{
+    const ap = document.getElementById('cfgAdminPass').value.trim();
+    const su = document.getElementById('cfgSupUser').value.trim();
+    const sp = document.getElementById('cfgSupPass').value.trim();
+    if(!ap || !su || !sp){ toast('لا يمكن ترك أي حقل فارغًا'); return; }
+    state.config.adminPassword = ap; state.config.supervisorUser = su; state.config.supervisorPassword = sp;
+    await save('sq:config', state.config);
+    await audit('تغيير كلمات سر الإدارة', 'تم تحديث بيانات دخول المدير/المشرف');
+    closeModal(); toast('تم حفظ كلمات السر ✅ (تنطبق على كل الأجهزة)');
+  };
+  document.querySelectorAll('[data-pinemp]').forEach(el=> el.onclick = ()=>openChangePinModal(el.dataset.pinemp));
+}
+function openChangePinModal(empId){
+  const emp = findEmp(empId); if(!emp) return;
+  showModal(`
+    <div class="modal-head"><h3>🔐 الرقم السري — ${esc(emp.name)}</h3><button class="modal-close" data-close>✕</button></div>
+    <div class="row"><span class="lbl">الرقم الحالي</span><span class="val">${esc(String(emp.pin))}</span></div>
+    <label class="field-label">الرقم السري الجديد (4-6 أرقام)</label>
+    <input id="newPinInput" inputmode="numeric" maxlength="6" placeholder="مثال: 2580">
+    <button class="btn" id="savePinBtn">حفظ الرقم الجديد</button>
+  `);
+  document.getElementById('savePinBtn').onclick = async ()=>{
+    const p = document.getElementById('newPinInput').value.trim();
+    if(!/^[0-9]{4,6}$/.test(p)){ toast('الرقم يجب أن يكون 4 إلى 6 أرقام'); return; }
+    emp.pin = p;
+    await save('sq:employees', state.employees);
+    await audit('تغيير رقم سري', emp.name+' (#'+emp.id+')');
+    await notify(String(emp.id), '🔐 تم تغيير رقمك السري', 'قام المدير بتحديث رقمك السري — استخدم الرقم الجديد عند الدخول القادم');
+    closeModal(); toast('تم تغيير الرقم السري ✅');
+  };
+}
+
+/* ---------- ⭐ منتج التركيز اليومي (اختياري) ---------- */
+function openFocusProductModal(){
+  const fp = state.config.focusProduct;
+  const activeToday = fp && fp.date===todayStr();
+  showModal(`
+    <div class="modal-head"><h3>⭐ منتج التركيز اليوم</h3><button class="modal-close" data-close>✕</button></div>
+    <p style="font-size:11.5px;color:var(--muted);margin:0 0 8px">اختر الصنف الذي تريد أن يراه الجميع اليوم عند فتح التطبيق. الاختيار <b>ليس إلزاميًا</b> — بدون اختيار يعرض التطبيق منتجًا تلقائيًا بالتناوب.</p>
+    ${activeToday ? `<div class="note" style="border-color:var(--orange)">اختيار اليوم الحالي: <b>${esc(DAILY_PRODUCTS[fp.idx].name)}</b></div>` : `<div class="note">لا يوجد اختيار لليوم — العرض تلقائي.</div>`}
+    <button class="btn outline small" id="clearFocusBtn" style="margin-bottom:10px">↩️ إلغاء الاختيار (عرض تلقائي)</button>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      ${DAILY_PRODUCTS.map((p,i)=>`
+      <div data-focusidx="${i}" style="cursor:pointer;border:2px solid ${activeToday&&fp.idx===i?'var(--orange)':'var(--line)'};border-radius:12px;padding:8px;text-align:center;background:#fff">
+        ${p.img && AD_IMG[p.img] ? `<img src="data:image/jpeg;base64,${AD_IMG[p.img]}" style="width:100%;border-radius:8px;margin-bottom:4px" alt="">` : `<div style="font-size:26px;margin:8px 0">🍬</div>`}
+        <b style="font-size:11.5px;color:var(--teal-dark);display:block">${esc(p.name)}</b>
+        <small style="font-size:9.5px;color:#999">${esc(p.brand)}</small>
+      </div>`).join('')}
+    </div>
+  `, true);
+  document.getElementById('clearFocusBtn').onclick = async ()=>{
+    state.config.focusProduct = null;
+    await save('sq:config', state.config);
+    await audit('منتج التركيز', 'إلغاء الاختيار — عرض تلقائي');
+    closeModal(); toast('رجع العرض التلقائي');
+  };
+  document.querySelectorAll('[data-focusidx]').forEach(el=> el.onclick = async ()=>{
+    const idx = parseInt(el.dataset.focusidx);
+    state.config.focusProduct = {date: todayStr(), idx};
+    await save('sq:config', state.config);
+    await audit('منتج التركيز', 'اختيار: '+DAILY_PRODUCTS[idx].name);
+    await notify(['supervisor'], '⭐ منتج التركيز اليوم', 'حدد المدير منتج اليوم: '+DAILY_PRODUCTS[idx].name+' — ركزوا عليه بالبيع');
+    closeModal(); toast('تم اختيار: '+DAILY_PRODUCTS[idx].name+' ⭐');
+  });
+}
+
+/* ---------- 📤 رفع إكسل معدّل (أدمن فقط) ---------- */
+function excelTimeToHM(v){
+  if(typeof v === 'number'){ const mins = Math.round(v*24*60); return minToTime(mins); }
+  if(typeof v === 'string'){
+    const m = v.trim().match(/^([0-9]{1,2}):([0-9]{2})/);
+    if(m) return pad2(parseInt(m[1]))+':'+m[2];
+  }
+  return null;
+}
+async function importFromExcel(ev){
+  const file = ev.target.files[0]; ev.target.value=''; if(!file) return;
+  toast('⏳ جاري قراءة الملف...');
+  try{ await loadSheetJS(); }catch(e){ toast(e.message); return; }
+  const reader = new FileReader();
+  reader.onload = async ()=>{
+    try{
+      const wb = XLSX.read(reader.result, {type:'array'});
+      let updated=0, added=0, holReplaced=false;
+      // — شيت الموظفين
+      const empWs = wb.Sheets['الموظفون'];
+      if(empWs){
+        const rows = XLSX.utils.sheet_to_json(empWs, {defval:null});
+        rows.forEach(r=>{
+          const id = r['الرقم الوظيفي']; if(id==null || id==='') return;
+          let emp = findEmp(id);
+          const isNew = !emp;
+          if(isNew){
+            emp = {id: id, name:'', jobTitle:'', department:'', category:'إداري', employmentType:'شهري', status:'نشط',
+              hireDate: todayStr(), nationalId:'', phone:'', governorate:'', address:'', supervisor:'',
+              baseSalary:0, otherAllowances:0, healthInsurance:0, leaveUsed:0, sickLeaveUsed:0, pin:'1234', photo:null, workStart:null, workEnd:null};
+            state.employees.push(emp); added++;
+          } else updated++;
+          const map = {'الاسم':'name','المسمى':'jobTitle','القسم':'department','الفئة':'category','نوع التوظيف':'employmentType',
+            'الحالة':'status','تاريخ التعيين':'hireDate','الرقم الوطني':'nationalId','الهاتف':'phone','المحافظة':'governorate',
+            'العنوان':'address','المشرف':'supervisor'};
+          Object.keys(map).forEach(col=>{ if(r[col]!=null && r[col]!=='') emp[map[col]] = String(r[col]).trim(); });
+          ['الراتب الأساسي','بدلات','تأمين صحي'].forEach((col,i)=>{
+            if(r[col]!=null && r[col]!==''){ const num = parseFloat(r[col]); if(!isNaN(num)) emp[['baseSalary','otherAllowances','healthInsurance'][i]] = num; }
+          });
+          if(r['بداية الدوام']!=null){ const t = excelTimeToHM(r['بداية الدوام']); if(t) emp.workStart = t; }
+          if(r['نهاية الدوام']!=null){ const t = excelTimeToHM(r['نهاية الدوام']); if(t) emp.workEnd = t; }
+          if(r['الرقم السري']!=null && /^[0-9]{4,6}$/.test(String(r['الرقم السري']).trim())) emp.pin = String(r['الرقم السري']).trim();
+        });
+        await save('sq:employees', state.employees);
+      }
+      // — شيت العطل الرسمية
+      const holWs = wb.Sheets['العطل الرسمية'];
+      if(holWs){
+        const rows = XLSX.utils.sheet_to_json(holWs, {defval:null});
+        const newHols = [];
+        rows.forEach(r=>{
+          let d = r['التاريخ'];
+          if(typeof d === 'number'){ const dt = XLSX.SSF.parse_date_code(d); if(dt) d = dt.y+'-'+pad2(dt.m)+'-'+pad2(dt.d); }
+          if(typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d.trim()) && r['المناسبة']) newHols.push({date:d.trim(), name:String(r['المناسبة']).trim()});
+        });
+        if(newHols.length){ state.holidays = newHols; await save('sq:holidays', state.holidays); holReplaced=true; }
+      }
+      if(!empWs && !holWs){ toast('⚠️ لم أجد شيت "الموظفون" أو "العطل الرسمية" في الملف'); return; }
+      await audit('رفع إكسل', `تحديث ${updated} موظف · إضافة ${added} موظف${holReplaced?' · تحديث العطل الرسمية':''}`);
+      toast(`تم الرفع ✅ — تحديث ${updated} · إضافة ${added}${holReplaced?' · العطل محدّثة':''}`);
+      render();
+    }catch(e){ console.error(e); toast('فشل قراءة الملف: '+e.message); }
+  };
+  reader.readAsArrayBuffer(file);
 }
 
 /* =========================================================
