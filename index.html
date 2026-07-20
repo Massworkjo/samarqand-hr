@@ -172,6 +172,8 @@ function fbErrorHelp(code){
     return '❗ تسجيل الدخول المجهول غير مفعّل. الحل: Firebase → Authentication → Sign-in method → Anonymous → Enable → Save';
   if(String(code).includes('permission-denied') || String(code).includes('PERMISSION_DENIED'))
     return '❗ قواعد الحماية غير منشورة. الحل: Firebase → Firestore Database → Rules → الصق القواعد → Publish';
+  if(String(code).includes('timeout:write') || String(code).includes('timeout:save'))
+    return '📡 الشبكة تحجب قناة الكتابة — جرّب "إعادة الاتصال الآن"، وإن استمرت جرّب شبكة أخرى (WiFi/بيانات)';
   if(String(code).includes('unavailable') || String(code).includes('timeout') || String(code).includes('network'))
     return '📶 مشكلة إنترنت — تأكد من الاتصال وأعد فتح التطبيق';
   if(String(code).includes('api-key'))
@@ -185,9 +187,11 @@ async function initFirebase(){
     FB_STATUS = {ok:false, code:'auth', msg:'جاري تسجيل الدخول...'};
     await withTimeout(firebase.auth().signInAnonymously(), 15000, 'auth');
     FB_DB = firebase.firestore();
-    try{ await FB_DB.enablePersistence({synchronizeTabs:true}); }catch(e){ /* multi-tab or unsupported — ok */ }
+    // وضع التوافق: يحل مشكلة انحجاب الكتابة على بعض شبكات الموبايل وسفاري iOS
+    try{ FB_DB.settings({ experimentalForceLongPolling: true, merge: true }); }catch(e){ console.warn('settings:', e); }
+    try{ await FB_DB.enablePersistence(); }catch(e){ /* تبويب ثانٍ أو غير مدعوم — يعمل بدون كاش محلي */ }
     // فحص فعلي للكتابة والقراءة (يكشف مشكلة القواعد فورًا)
-    await withTimeout(FB_DB.collection('hr').doc('connection_ping').set({t: Date.now()}), 15000, 'write-test');
+    await withTimeout(FB_DB.collection('hr').doc('connection_ping').set({t: Date.now()}), 25000, 'write-test');
     FB_READY = true;
     FB_STATUS = {ok:true, code:'ready', msg:'متصل بالسيرفر'};
   }catch(e){
@@ -259,7 +263,7 @@ function startLiveSync(){
    CONSTANTS
 ========================================================= */
 const TARGET_LAT = 31.9395125, TARGET_LNG = 35.9532656, GEOFENCE_M = 200;
-const APP_VERSION = "5.4";
+const APP_VERSION = "5.5";
 const ADMIN_PASSWORD = "886622";
 const SUPERVISOR_USER = "supervisor", SUPERVISOR_PASSWORD = "7890";
 const WORK_START = "08:00";
