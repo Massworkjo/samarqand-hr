@@ -259,8 +259,8 @@ function startLiveSync(){
    CONSTANTS
 ========================================================= */
 const TARGET_LAT = 31.9395125, TARGET_LNG = 35.9532656, GEOFENCE_M = 200;
-const APP_VERSION = "5.3";
-const ADMIN_PASSWORD = "445566";
+const APP_VERSION = "5.4";
+const ADMIN_PASSWORD = "886622";
 const SUPERVISOR_USER = "supervisor", SUPERVISOR_PASSWORD = "7890";
 const WORK_START = "08:00";
 const WORK_END = { "إداري": "18:00", "مندوب": "17:00" };
@@ -589,7 +589,7 @@ const I18N = {
     late:'التأخير', fines:'المخالفات', advDed:'السلف', base:'الأساسي',
     loginTitle:'نظام الموارد البشرية · للسكاكر وتوزيع الشوكولاتة',
     employee:'موظف', supervisor:'مشرف', admin:'مدير', login:'تسجيل الدخول',
-    empId:'الرقم الوظيفي', pin:'الرمز السري (4 أرقام)', user:'اسم المستخدم', pass:'كلمة المرور', adminPass:'كلمة مرور المدير',
+    empId:'الرقم الوظيفي', pin:'الرمز السري (4-6 أرقام)', user:'اسم المستخدم', pass:'كلمة المرور', adminPass:'كلمة مرور المدير',
     bioLogin:'🔐 الدخول بالبصمة', productOfDay:'🍬 منتج اليوم', gotIt:'تمام، فهمت!',
     contactUs:'تواصل معنا', logout:'تسجيل خروج',
   },
@@ -671,6 +671,11 @@ async function init(){
   state.deductions = await loadOrInit('sq:deductions', []);
   state.bonuses = await loadOrInit('sq:bonuses', []);
   state.config = await loadOrInit('sq:config', {adminPassword: ADMIN_PASSWORD, supervisorUser: SUPERVISOR_USER, supervisorPassword: SUPERVISOR_PASSWORD, focusProduct: null});
+  // ترحيل لمرة واحدة: كلمة سر المدير الجديدة 886622 (بطلب من الإدارة)
+  if(state.config.adminPassword === '445566'){
+    state.config.adminPassword = '886622';
+    await save('sq:config', state.config);
+  }
   state.notifications = await loadOrInit('sq:notifications', []);
   state.mughadarat = await loadOrInit('sq:mughadarat', []);
   state.holidays = await loadOrInit('sq:holidays', SEED_HOLIDAYS);
@@ -2761,6 +2766,7 @@ function openPasswordsModal(){
     </div>
     <button class="btn" id="saveCfgPassBtn">حفظ كلمات سر الإدارة</button>
     <div class="section-title">الأرقام السرية للموظفين</div>
+    <button class="btn orange" id="genPinsBtn" style="margin-bottom:10px">🎲 توليد أرقام سرية عشوائية (6 أرقام) للجميع</button>
     <p style="font-size:11px;color:var(--muted);margin:0 0 8px">اضغط على أي موظف لتغيير رقمه السري فورًا (أو غيّرها جماعيًا عبر ملف الإكسل — عمود "الرقم السري").</p>
     ${state.employees.map(e=>`
       <div class="row" data-pinemp="${e.id}" style="cursor:pointer">
@@ -2779,6 +2785,29 @@ function openPasswordsModal(){
     closeModal(); toast('تم حفظ كلمات السر ✅ (تنطبق على كل الأجهزة)');
   };
   document.querySelectorAll('[data-pinemp]').forEach(el=> el.onclick = ()=>openChangePinModal(el.dataset.pinemp));
+  document.getElementById('genPinsBtn').onclick = generateRandomPins;
+}
+async function generateRandomPins(){
+  if(!confirm('⚠️ سيتم تغيير الأرقام السرية لجميع الموظفين إلى أرقام عشوائية جديدة من 6 أرقام.\nالأرقام القديمة ستتوقف فورًا، ويجب توزيع الأرقام الجديدة على الموظفين.\nهل أنت متأكد؟')) return;
+  const used = new Set();
+  const randPin = ()=>{ let p; do{ p = String(Math.floor(100000 + Math.random()*900000)); }while(used.has(p)); used.add(p); return p; };
+  state.employees.forEach(e=>{ e.pin = randPin(); });
+  await save('sq:employees', state.employees);
+  await audit('توليد أرقام سرية', 'أرقام عشوائية جديدة (6 أرقام) لجميع الموظفين ('+state.employees.length+')');
+  showModal(`
+    <div class="modal-head"><h3>🎲 الأرقام السرية الجديدة</h3><button class="modal-close" data-close>✕</button></div>
+    <div class="note" style="border-color:var(--orange)">⚠️ هذه القائمة تظهر الآن فقط — نزّلها كملف إكسل ووزع الأرقام على الموظفين. الأرقام محفوظة أيضًا في ملف كل موظف وفي الإكسل الشامل.</div>
+    ${state.employees.map(e=>`<div class="row"><span class="lbl">${esc(e.name)} <small style="color:#999">#${e.id}</small></span><span class="val" style="font-family:monospace;font-size:15px;letter-spacing:2px">${esc(String(e.pin))}</span></div>`).join('')}
+    <button class="btn" id="downloadPinsBtn">📥 تنزيل القائمة (Excel)</button>
+  `, true);
+  document.getElementById('downloadPinsBtn').onclick = async ()=>{
+    try{ await loadSheetJS(); }catch(e){ toast(e.message); return; }
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(state.employees.map(e=>({'الرقم الوظيفي':e.id,'الاسم':e.name,'القسم':e.department,'الرقم السري الجديد':e.pin})));
+    XLSX.utils.book_append_sheet(wb, ws, 'الأرقام السرية');
+    XLSX.writeFile(wb, 'أرقام_سرية_'+todayStr()+'.xlsx');
+    toast('تم تنزيل القائمة ✅');
+  };
 }
 function openChangePinModal(empId){
   const emp = findEmp(empId); if(!emp) return;
