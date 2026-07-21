@@ -240,6 +240,7 @@ function startLiveSync(){
     if(touched.size===0) return;
     (async ()=>{
       let changed = false;
+      const prevNtfIds = new Set((state.notifications||[]).map(n=>n.id));
       for(const base of touched){
         const stateKey = base; // نفس اسم المفتاح في state
         if(!(stateKey in state)) continue;
@@ -250,6 +251,15 @@ function startLiveSync(){
         }catch(e){}
       }
       if(changed){
+        // إشعارات فورية (Push) على الجهاز عند وصول إشعار جديد عبر المزامنة
+        try{
+          if(state.role && 'Notification' in window && Notification.permission==='granted'){
+            const target = myNotifTarget();
+            (state.notifications||[]).filter(n=>n.to===target && !n.read && !prevNtfIds.has(n.id)).slice(-3).forEach(n=>{
+              try{ new Notification(n.title, {body:n.body, tag:n.id}); }catch(e){}
+            });
+          }
+        }catch(e){}
         updateBellBadge();
         // لا نعيد الرسم إذا في نافذة مفتوحة حتى لا نقطع المستخدم وهو يكتب
         if(!document.getElementById('modalBg')) render();
@@ -297,9 +307,10 @@ const BONUS_TYPES = ["مكافأة لمرة واحدة","مكافأة شهرية
 const CUT_TYPES = ["خصم لمرة واحدة","خصم شهري","خصم ربع سنوي","خصم سنوي"];
 const CONTACT = {
   website: "www.samarqandsweets.com",
-  emails: ["Info@samarqandsweets.com","momen.amro@samarqandsweets.com","mohanad.amro@samarqandsweets.com"],
-  phones: [["المعرض","+962781044022"],["المبيعات المحلية","+962781044001"],["المبيعات الخارجية","+962781044144"],["الشركة","+962778932185"]],
-  instagram: "https://www.instagram.com/samarqand.mena/"
+  emails: ["Info@samarqandsweets.com","momenamro@samarqandsweets.com","mohanad@samarqandsweets.com"],
+  phones: [["المعرض","+962781044022"],["مشرف المبيعات","+962781044001"],["المبيعات الخارجية","+962781044144"],["الشركة","+962778932185"]],
+  instagram: "https://www.instagram.com/samarqand.mena/",
+  facebook: "https://www.facebook.com/p/%D8%B4%D8%B1%D9%83%D8%A9-%D8%B3%D9%85%D8%B1%D9%82%D9%86%D8%AF-%D9%84%D9%84%D8%B3%D9%83%D8%A7%D9%83%D8%B1-Samarqand-co-100091360552095/"
 };
 const DAILY_PRODUCTS = [
   {img:"choco_break", name:"Choco Break", brand:"Crafers", line:"شوكولاتة بثلاث نكهات: كاكاو، جوز هند، حليب — كرتونة 24 حبة"},
@@ -438,6 +449,10 @@ function monthlyAdvUsed(emp){
   }).reduce((s,a)=>s+a.amount,0)*100)/100;
 }
 function daysBetween(d1,d2){ return Math.round((new Date(d2)-new Date(d1))/86400000)+1; }
+function leaveDays(d1,d2){ return Math.max(1, Math.round((new Date(d2)-new Date(d1))/86400000)); } // يوم العودة لا يُحسب
+function approvedMorningMug(empId, dateStr){
+  return state.mughadarat.find(m=>String(m.employeeId)===String(empId) && m.date===dateStr && m.timing==='بداية الدوام' && m.status==='موافق عليها');
+}
 function minToTime(m){ m=((m%1440)+1440)%1440; return pad2(Math.floor(m/60))+':'+pad2(m%60); }
 function fmtDur(mins){ const h=Math.floor(mins/60), m=mins%60; return (h?h+' ساعة ':'')+(m?m+' دقيقة':'')||'0 دقيقة'; }
 function isHoliday(dateStr){ return state.holidays.find(h=>h.date===dateStr); }
@@ -626,7 +641,7 @@ function applyLangDir(){
 async function deductFromLeaveOrSalary(emp, dayFraction, reasonLabel){
   dayFraction = Math.round(dayFraction*100)/100;
   if(dayFraction<=0) return null;
-  let fromLeave=0, fromSalary=0;
+  let fromLeave=0, fromSalary=0, dedId=null;
   const available = annualRemaining(emp);
   if(available >= dayFraction){
     emp.leaveUsed = Math.round(((emp.leaveUsed||0)+dayFraction)*100)/100;
@@ -636,11 +651,12 @@ async function deductFromLeaveOrSalary(emp, dayFraction, reasonLabel){
     const shortfall = Math.round((dayFraction-available)*100)/100;
     emp.leaveUsed = Math.round(((emp.leaveUsed||0)+available)*100)/100;
     fromSalary = Math.round(shortfall*dailyRate(emp)*100)/100;
-    state.deductions.push({id:'DED-'+Date.now()+Math.random().toString(16).slice(2,6), employeeId:emp.id, employeeName:emp.name, date: todayStr(), amount: fromSalary, reason: reasonLabel+' (تجاوز رصيد الإجازة)'});
+    dedId = 'DED-'+Date.now()+Math.random().toString(16).slice(2,6);
+    state.deductions.push({id:dedId, employeeId:emp.id, employeeName:emp.name, date: todayStr(), amount: fromSalary, reason: reasonLabel+' (تجاوز رصيد الإجازة)'});
     await save('sq:deductions', state.deductions);
   }
   await save('sq:employees', state.employees);
-  return {fromLeave, fromSalary};
+  return {fromLeave, fromSalary, dedId};
 }
 
 /* =========================================================
@@ -956,7 +972,8 @@ function attachShellEvents(){
   if(notifBtn){ notifBtn.onclick = openNotificationsModal; updateBellBadge(); }
   const langBtn = document.getElementById('langBtn');
   if(langBtn) langBtn.onclick = ()=>{ state.lang = state.lang==='ar' ? 'en' : 'ar'; applyLangDir(); render(); };
-  document.querySelectorAll('.bottomnav button').forEach(b=> b.onclick = ()=>{ state.screen=b.dataset.screen; render(); });
+  document.querySelectorAll('.bottomnav button').forEach(b=> b.onclick = ()=>{ state.search=''; state.screen=b.dataset.screen; render(); });
+  requestNotifPermission();
   attachContentEvents();
 }
 
@@ -986,6 +1003,8 @@ function employeeScreens(){
   if(state.screen==='leaves') return employeeLeavesScreen(emp);
   if(state.screen==='profile') return employeeProfile(emp);
   if(state.screen==='rules') return rulesView();
+  if(state.screen==='myviolations') return employeeViolationsScreen(emp);
+  if(state.screen==='mycustody') return employeeCustodyScreen(emp);
   return employeeHome(emp);
 }
 function todaysRecord(empId){ return state.attendance.find(a=>String(a.employeeId)===String(empId) && a.date===todayStr()); }
@@ -1076,9 +1095,9 @@ function employeeHome(emp){
     </div>
 
     <div class="card">
-      <h3>${T('myCustody')}</h3>
+      <h3 style="display:flex;justify-content:space-between;align-items:center">${T('myCustody')} <button class="linklike" id="goCustodyBtn" style="background:none;border:none;font-size:12px;cursor:pointer;color:var(--teal-dark);font-weight:700">التفاصيل ›</button></h3>
       ${myCus.length===0 ? emptyLine('لا توجد عهد مسندة لك حاليًا') :
-        myCus.map(c=>`<div class="row"><span class="lbl">${esc(c.type)} — ${esc(c.description||'')}</span><span class="val">${c.value?c.value+' د.أ':''}</span></div>`).join('')}
+        myCus.slice(0,5).map(c=>`<div class="row"><span class="lbl">${esc(c.type)} — ${esc(c.description||'')}</span><span class="val">${c.value?c.value+' د.أ':''}</span></div>`).join('')}
     </div>
 
     <div class="card">
@@ -1089,13 +1108,81 @@ function employeeHome(emp){
     </div>
 
     <div class="card">
-      <h3>${T('myViolations')}</h3>
+      <h3 style="display:flex;justify-content:space-between;align-items:center">${T('myViolations')} <button class="linklike" id="goViolationsBtn" style="background:none;border:none;font-size:12px;cursor:pointer;color:var(--teal-dark);font-weight:700">التفاصيل ›</button></h3>
       ${myVio.length===0 ? emptyLine('سجلك نظيف، لا توجد مخالفات 🎉') :
-        myVio.slice().reverse().map(v=>`<div class="row"><span class="lbl">${v.date} — ${esc(v.type)}</span><span class="pill orange">${esc(v.action)}</span></div>`).join('')}
+        myVio.slice().reverse().slice(0,5).map(v=>`<div class="row"><span class="lbl">${v.date} — ${esc(v.type)}${v.category?('<br><small style=\\"color:#999\\">'+esc(v.category)+'</small>'):''}</span><span class="pill orange">${esc(v.action)}</span></div>`).join('')}
     </div>
   `;
 }
 function emptyLine(msg){ return `<p style="font-size:12.5px;color:var(--muted);margin:4px 0">${msg}</p>`; }
+
+/* ---------- صفحة مخالفات الموظف ---------- */
+function employeeViolationsScreen(emp){
+  const q = (state.search||'').trim().toLowerCase();
+  let list = state.violations.filter(v=>String(v.employeeId)===String(emp.id)).slice().reverse();
+  if(q) list = list.filter(v=> (v.type||'').toLowerCase().includes(q) || (v.category||'').toLowerCase().includes(q) || (v.description||'').toLowerCase().includes(q) || (v.date||'').includes(q));
+  const all = state.violations.filter(v=>String(v.employeeId)===String(emp.id));
+  const totalFines = Math.round(all.reduce((s,v)=>s+(v.fine||0),0)*100)/100;
+  return `
+    <div style="display:flex;align-items:center;gap:8px;margin:0 0 12px">
+      <button class="btn ghost" id="backHomeBtn" style="width:auto;padding:6px 12px;font-size:13px">‹ رجوع</button>
+      <h3 style="margin:0;color:var(--teal-dark)">⚠️ مخالفاتي</h3>
+    </div>
+    <div class="grid2" style="margin-bottom:12px">
+      <div class="stat"><b>${all.length}</b><span>عدد المخالفات</span></div>
+      <div class="stat"><b>${totalFines}</b><span>مجموع الغرامات (د.أ)</span></div>
+    </div>
+    <div class="searchbar"><input id="empPageSearch" placeholder="ابحث بالنوع أو التصنيف أو التاريخ..." value="${esc(state.search)}"><span class="ic">🔎</span></div>
+    <div class="card"><h3>السجل الكامل</h3>
+      ${list.length===0 ? emptyLine(q?'لا نتائج مطابقة للبحث':'سجلك نظيف، لا توجد مخالفات 🎉') :
+        list.map(v=>`
+        <div class="row" style="align-items:flex-start">
+          <span class="lbl">${v.date} — <b>${esc(v.type)}</b>
+            ${v.category?('<br><small style="color:var(--teal-dark);font-weight:700">'+esc(v.category)+'</small>'):''}
+            ${v.description?('<br><small style="color:#999">'+esc(v.description)+'</small>'):''}
+          </span>
+          <span style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+            <span class="pill orange">${esc(v.action||'')}</span>
+            ${v.fine?`<span class="pill red">غرامة ${v.fine} د.أ</span>`:''}
+          </span>
+        </div>`).join('')}
+    </div>
+  `;
+}
+
+/* ---------- صفحة عهد الموظف ---------- */
+function employeeCustodyScreen(emp){
+  const q = (state.search||'').trim().toLowerCase();
+  let list = state.custody.filter(c=>String(c.employeeId)===String(emp.id)).slice().reverse();
+  if(q) list = list.filter(c=> (c.type||'').toLowerCase().includes(q) || (c.description||'').toLowerCase().includes(q) || (c.date||'').includes(q));
+  const all = state.custody.filter(c=>String(c.employeeId)===String(emp.id));
+  const totalVal = Math.round(all.reduce((s,c)=>s+(c.value||0),0)*100)/100;
+  return `
+    <div style="display:flex;align-items:center;gap:8px;margin:0 0 12px">
+      <button class="btn ghost" id="backHomeBtn" style="width:auto;padding:6px 12px;font-size:13px">‹ رجوع</button>
+      <h3 style="margin:0;color:var(--teal-dark)">🎒 عهدي</h3>
+    </div>
+    <div class="grid2" style="margin-bottom:12px">
+      <div class="stat"><b>${all.length}</b><span>عدد العهد</span></div>
+      <div class="stat"><b>${totalVal}</b><span>القيمة الإجمالية (د.أ)</span></div>
+    </div>
+    <div class="searchbar"><input id="empPageSearch" placeholder="ابحث بنوع العهدة أو الوصف..." value="${esc(state.search)}"><span class="ic">🔎</span></div>
+    <div class="card"><h3>العهد المسندة لك</h3>
+      ${list.length===0 ? emptyLine(q?'لا نتائج مطابقة للبحث':'لا توجد عهد مسندة لك حاليًا') :
+        list.map(c=>`
+        <div class="row" style="align-items:flex-start">
+          <span class="lbl">${c.date?c.date+' — ':''}<b>${esc(c.type)}</b>
+            ${c.description?('<br><small style="color:#999">'+esc(c.description)+'</small>'):''}
+          </span>
+          <span style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+            ${c.value?`<span class="pill green">${c.value} د.أ</span>`:''}
+            <span class="pill orange">بعهدتك — حافظ عليها</span>
+          </span>
+        </div>`).join('')}
+    </div>
+    <div class="note" style="margin-top:10px">⚠️ أي فقدان أو تلف ناتج عن إهمال قد يُخصم حسب لائحة العهد. عند نقل العهدة لموظف آخر يتم توثيقها من الإدارة.</div>
+  `;
+}
 
 /* ---------- Dedicated Advances page ---------- */
 function employeeAdvancesScreen(emp){
@@ -1198,6 +1285,18 @@ function attachEmployeeEvents(){
   const salaryStatBtn = document.getElementById('salaryStatBtn'); if(salaryStatBtn) salaryStatBtn.onclick = ()=>openSalaryBreakdownModal(findEmp(state.currentEmployee));
   const goAdvancesBtn = document.getElementById('goAdvancesBtn'); if(goAdvancesBtn) goAdvancesBtn.onclick = ()=>{ state.screen='advances'; render(); };
   const goLeavesBtn = document.getElementById('goLeavesBtn'); if(goLeavesBtn) goLeavesBtn.onclick = ()=>{ state.screen='leaves'; render(); };
+  const goViolationsBtn = document.getElementById('goViolationsBtn'); if(goViolationsBtn) goViolationsBtn.onclick = ()=>{ state.search=''; state.screen='myviolations'; render(); };
+  const goCustodyBtn = document.getElementById('goCustodyBtn'); if(goCustodyBtn) goCustodyBtn.onclick = ()=>{ state.search=''; state.screen='mycustody'; render(); };
+  const backHomeBtn = document.getElementById('backHomeBtn'); if(backHomeBtn) backHomeBtn.onclick = ()=>{ state.search=''; state.screen='home'; render(); };
+  const empPageSearch = document.getElementById('empPageSearch');
+  if(empPageSearch) empPageSearch.oninput = e=>{
+    state.search = e.target.value;
+    const caret = e.target.selectionStart;
+    const content = document.getElementById('content');
+    if(content){ content.innerHTML = contentView(); attachEmployeeEvents(); }
+    const el2 = document.getElementById('empPageSearch');
+    if(el2){ el2.focus(); try{ el2.setSelectionRange(caret, caret); }catch(_){} }
+  };
   document.querySelectorAll('[data-lvview]').forEach(el=>{
     el.onclick = ()=>{
       const lv = state.leaveRequests.find(l=>l.id===el.dataset.lvview);
@@ -1257,30 +1356,46 @@ async function recordClock(emp, type, dist, within, geoTracked){
   if(type==='in'){
     rec.timeIn = t; rec.withinIn = within; rec.distIn = dist; rec.geoTracked = geoTracked;
     if(holidayWork) rec.holiday = hol.name;
-    // العطلة الرسمية: بدون خصومات تأخير + مكافأة نصف يوم (يوم بيوم ونصف) — بدون المناديب
-    if(holidayWork && !isRep){
-      state.bonuses.push({id:'BON-'+Date.now()+Math.random().toString(16).slice(2,6), employeeId:emp.id, employeeName:emp.name, date: todayStr(), amount: Math.round(0.5*dailyRate(emp)*100)/100, type:'عمل يوم عطلة رسمية', note:'العمل يوم '+hol.name+' يُحسب يوم بيوم ونصف'});
-      await save('sq:bonuses', state.bonuses);
-      toast('🎉 عمل بيوم عطلة رسمية — يُحسب يوم بيوم ونصف');
-    }
+    // مكافأة العطلة الرسمية تُمنح عند تسجيل الانصراف — فقط لمن يبصم دخول وخروج من داخل الشركة
     // lateness (لا تُحسب أيام العطل الرسمية)
     const lateMin = timeToMin(t) - timeToMin(empWorkStart(emp));
     if(lateMin > GRACE_MIN && !holidayWork){
       rec.lateMinutes = lateMin;
-      if(lateMin >= LATE_HALFDAY_THRESHOLD){
+      const mMug = approvedMorningMug(emp.id, todayStr());
+      if(mMug){
+        // نظام التأخير: مغادرة صباحية موافق عليها من المدير = لا خصم تأخير
+        rec.lateExcused = true;
+        toast('لديك مغادرة صباحية موافق عليها — لا يُحسب خصم تأخير اليوم ✅');
+      } else if(lateMin >= LATE_HALFDAY_THRESHOLD){
         const cut = Math.round(0.5*dailyRate(emp)*100)/100;
-        state.deductions.push({id:'DED-'+Date.now()+Math.random().toString(16).slice(2,6), employeeId:emp.id, employeeName:emp.name, date: todayStr(), amount: cut, cutType:'خصم لمرة واحدة', reason:'تأخير '+lateMin+' دقيقة — خصم نصف يوم من الراتب'});
+        const halfDedId = 'DED-'+Date.now()+Math.random().toString(16).slice(2,6);
+        state.deductions.push({id:halfDedId, employeeId:emp.id, employeeName:emp.name, date: todayStr(), amount: cut, cutType:'خصم لمرة واحدة', reason:'تأخير '+lateMin+' دقيقة — خصم نصف يوم من الراتب'});
+        rec.lateDeduction = {fromLeave:0, fromSalary:cut, dedIds:[halfDedId]};
         await save('sq:deductions', state.deductions);
         toast(`تأخرت ${lateMin} دقيقة — تم خصم نصف يوم (${cut} د.أ) من الراتب مباشرة`);
       } else {
         const dayFraction = Math.round((lateMin/DAY_MINUTES)*100)/100;
         const result = await deductFromLeaveOrSalary(emp, dayFraction, 'تأخير عن الدوام '+lateMin+' دقيقة');
-        if(result) toast(`تأخرت ${lateMin} دقيقة — تم خصم ${result.fromLeave} يوم من رصيد إجازتك${result.fromSalary?(' و'+result.fromSalary+' د.أ من الراتب'):''}`);
+        if(result){
+          rec.lateDeduction = {fromLeave:result.fromLeave, fromSalary:result.fromSalary, dedIds: result.dedId?[result.dedId]:[]};
+          toast(`تأخرت ${lateMin} دقيقة — تم خصم ${result.fromLeave} يوم من رصيد إجازتك${result.fromSalary?(' و'+result.fromSalary+' د.أ من الراتب'):''}`);
+        }
       }
     }
     if(isRep) await notify(['admin','supervisor'], '📍 حضور مندوب', `${emp.name} سجل حضوره الساعة ${t}${rec.lateMinutes?(' (متأخر '+rec.lateMinutes+' دقيقة)'):''}`, null, {k:'att'});
   } else {
     rec.timeOut = t; rec.withinOut = within; rec.distOut = dist;
+    // العطلة الرسمية: يوم بيوم ونصف — فقط لمن بصم دخولًا وخروجًا من داخل نطاق الشركة (بدون المناديب)
+    if(holidayWork && !isRep && !rec.holidayBonusGiven){
+      if(rec.withinIn && within){
+        rec.holidayBonusGiven = true;
+        state.bonuses.push({id:'BON-'+Date.now()+Math.random().toString(16).slice(2,6), employeeId:emp.id, employeeName:emp.name, date: todayStr(), amount: Math.round(0.5*dailyRate(emp)*100)/100, type:'عمل يوم عطلة رسمية', note:'العمل يوم '+hol.name+' يُحسب يوم بيوم ونصف (بصمة دخول وخروج من داخل الشركة)'});
+        await save('sq:bonuses', state.bonuses);
+        toast('🎉 عمل بيوم عطلة رسمية — يُحسب يوم بيوم ونصف');
+      } else {
+        toast('⚠️ مكافأة العطلة الرسمية تُمنح فقط لمن يبصم دخولًا وخروجًا من داخل الشركة');
+      }
+    }
     const endMin = timeToMin(empWorkEnd(emp));
     // مغادرة تلقائية للمندوب إذا ترك السوق قبل نهاية دوامه
     if(isRep && timeToMin(t) < endMin){
@@ -1412,19 +1527,26 @@ function openRequestLeaveModal(){
     <p style="font-size:12px;color:var(--muted)">رصيدك: <b>${annualRemaining(emp)} يوم سنوية</b> · <b>${sickRemaining(emp)} يوم مرضية</b></p>
     <label class="field-label">نوع الإجازة</label>
     <select id="lvType">${['سنوية','مرضية','طارئة','بدون راتب','أمومة','زواج','وفاة','عرضية'].map(o=>`<option>${o}</option>`).join('')}</select>
-    <label class="field-label">من تاريخ</label><input id="lvStart" type="date" value="${todayStr()}">
-    <label class="field-label">إلى تاريخ</label><input id="lvEnd" type="date" value="${todayStr()}">
+    <label class="field-label">من تاريخ (أول يوم إجازة)</label><input id="lvStart" type="date" value="${todayStr()}">
+    <label class="field-label">إلى تاريخ (يوم العودة للدوام — لا يُحسب من الإجازة)</label><input id="lvEnd" type="date" value="${todayStr()}">
+    <p style="font-size:12px;color:var(--teal-dark);font-weight:700;margin:0 0 10px">📅 عدد أيام الإجازة: <span id="lvDaysPreview">—</span></p>
     <label class="field-label">تفاصيل الإجازة وسبب الطلب</label>
     <textarea id="lvDetails" rows="3" placeholder="اكتب تفاصيل الإجازة ولماذا تحتاجها..."></textarea>
     <button class="btn orange" id="submitLvBtn">إرسال طلب الإجازة</button>
   `);
+  const updLvDays = ()=>{
+    const s=document.getElementById('lvStart').value, e=document.getElementById('lvEnd').value;
+    document.getElementById('lvDaysPreview').textContent = (s && e && new Date(e)>=new Date(s)) ? (leaveDays(s,e)+' يوم — العودة للدوام: '+e) : '—';
+  };
+  ['lvStart','lvEnd'].forEach(id=>document.getElementById(id).onchange=updLvDays);
+  updLvDays();
   document.getElementById('submitLvBtn').onclick = async ()=>{
     const start = document.getElementById('lvStart').value, end = document.getElementById('lvEnd').value;
     const details = document.getElementById('lvDetails').value.trim();
     if(!start || !end){ toast('حدد تاريخ البداية والنهاية'); return; }
     if(new Date(end) < new Date(start)){ toast('تاريخ النهاية يجب أن يكون بعد البداية'); return; }
     if(!details){ toast('اكتب تفاصيل الإجازة وسبب الطلب'); return; }
-    const days = daysBetween(start, end);
+    const days = leaveDays(start, end);
     const isRep = emp.category==='مندوب';
     const lvTypeVal = document.getElementById('lvType').value;
     const btnL = document.getElementById('submitLvBtn'); if(btnL){ btnL.disabled = true; btnL.textContent = '⏳ جاري الإرسال...'; }
@@ -1444,18 +1566,41 @@ function openRequestLeaveModal(){
 
 function openSalaryBreakdownModal(emp){
   const b = salaryBreakdown(emp);
+  const eid = String(emp.id);
+  const myBon = state.bonuses.filter(x=>String(x.employeeId)===eid).slice().reverse();
+  const myDed = state.deductions.filter(x=>String(x.employeeId)===eid).slice().reverse();
+  const myVioF = state.violations.filter(x=>String(x.employeeId)===eid && (x.fine||0)>0).slice().reverse();
+  const myAdvAct = state.advances.filter(a=>String(a.employeeId)===eid && a.status==='موافق عليها' && (a.remainingInstallments||0)>0);
+  const acc = (title, rows, emptyMsg) => `
+    <details class="rule-acc" style="margin:6px 0">
+      <summary style="font-size:12.5px;font-weight:700">${title}</summary>
+      <div style="padding:4px 2px 2px">${rows.length? rows.join('') : `<p style="font-size:11.5px;color:var(--muted);margin:4px 0">${emptyMsg}</p>`}</div>
+    </details>`;
   showModal(`
     <div class="modal-head"><h3>تفاصيل الراتب</h3><button class="modal-close" data-close>✕</button></div>
     <div class="row"><span class="lbl">الراتب الأساسي</span><span class="val">${emp.baseSalary} د.أ</span></div>
     <div class="row"><span class="lbl">بدلات أخرى</span><span class="val">${emp.otherAllowances||0} د.أ</span></div>
     <div class="row"><span class="lbl">الإجمالي</span><span class="val">${b.gross} د.أ</span></div>
+    <div class="divider"></div>
     <div class="row"><span class="lbl">⭐ مكافآت وعمل إضافي</span><span class="val" style="color:#1f8f63">+ ${b.bonusTotal} د.أ</span></div>
+    ${acc('عرض تفاصيل المكافآت ('+myBon.length+')',
+      myBon.map(x=>`<div class="row"><span class="lbl">${x.date} — ${esc(x.type)}${x.note?('<br><small style=\\"color:#999\\">السبب: '+esc(x.note)+'</small>'):''}</span><span class="val" style="color:#1f8f63">+${x.amount} د.أ</span></div>`),
+      'لا توجد مكافآت بعد')}
     <div class="divider"></div>
     <div class="row"><span class="lbl">🏥 تأمين صحي</span><span class="val">- ${b.health} د.أ</span></div>
     <div class="row"><span class="lbl">🏛️ ضمان اجتماعي (7.5%)</span><span class="val">- ${b.social} د.أ</span></div>
     <div class="row"><span class="lbl">⚠️ غرامات مخالفات</span><span class="val">- ${b.vioFines} د.أ</span></div>
+    ${acc('عرض تفاصيل الغرامات ('+myVioF.length+')',
+      myVioF.map(v=>`<div class="row"><span class="lbl">${v.date} — ${esc(v.type)}${v.category?('<br><small style=\\"color:var(--teal-dark)\\">'+esc(v.category)+'</small>'):''}${v.description?('<br><small style=\\"color:#999\\">'+esc(v.description)+'</small>'):''}</span><span class="val" style="color:#c0392b">- ${v.fine} د.أ</span></div>`),
+      'لا توجد غرامات مخالفات')}
     <div class="row"><span class="lbl">💵 أقساط سلف مستحقة</span><span class="val">- ${b.advDue} د.أ</span></div>
+    ${acc('عرض تفاصيل السلف ('+myAdvAct.length+')',
+      myAdvAct.map(a=>`<div class="row"><span class="lbl">سلفة ${a.amount} د.أ بتاريخ ${a.date}<br><small style=\\"color:#999\\">القسط الشهري ${a.installmentAmount||0} د.أ · متبقٍ ${a.remainingInstallments||0} قسط</small></span><span class="val" style="color:#c0392b">- ${a.installmentAmount||0} د.أ</span></div>`),
+      'لا توجد أقساط سلف نشطة')}
     <div class="row"><span class="lbl">➖ خصومات أخرى (تأخير/مغادرة)</span><span class="val">- ${b.otherDed} د.أ</span></div>
+    ${acc('عرض تفاصيل الخصومات ('+myDed.length+')',
+      myDed.map(d=>`<div class="row"><span class="lbl">${d.date} — <small style=\\"color:#999\\">السبب: ${esc(d.reason||d.type||'غير محدد')}</small></span><span class="val" style="color:#c0392b">- ${d.amount} د.أ</span></div>`),
+      'لا توجد خصومات أخرى — ممتاز 👏')}
     <div class="divider"></div>
     <div class="row"><span class="lbl" style="font-weight:800;color:var(--teal-dark)">الصافي النهائي</span><span class="val" style="font-size:16px;color:var(--teal-dark)">${b.net} د.أ</span></div>
   `, true);
@@ -1627,6 +1772,21 @@ async function finalizeMug(m){
       } else {
         const r = await deductFromLeaveOrSalary(emp, dayFraction, 'مغادرة '+fmtDur(m.durationMin)+': '+m.reason);
         dedNote = r ? ' (خُصم '+r.fromLeave+' يوم من رصيد الإجازات'+(r.fromSalary?(' و'+r.fromSalary+' د.أ من الراتب'):'')+')' : '';
+      }
+      // نظام التأخير: مغادرة صباحية موافق عليها تُلغي خصم التأخير الصباحي لذلك اليوم
+      if(m.timing==='بداية الدوام'){
+        const rec = state.attendance.find(a=>String(a.employeeId)===String(emp.id) && a.date===m.date);
+        if(rec && rec.lateDeduction && !rec.lateDeductionReversed){
+          const ld = rec.lateDeduction;
+          if(ld.fromLeave){ emp.leaveUsed = Math.max(0, Math.round(((emp.leaveUsed||0)-ld.fromLeave)*100)/100); await save('sq:employees', state.employees); }
+          if(ld.dedIds && ld.dedIds.length){ state.deductions = state.deductions.filter(d=>!ld.dedIds.includes(d.id)); await save('sq:deductions', state.deductions); }
+          rec.lateDeductionReversed = true; rec.lateExcused = true;
+          await save('sq:attendance', state.attendance);
+          await audit('إلغاء خصم تأخير', emp.name+': مغادرة صباحية موافق عليها بتاريخ '+m.date);
+          dedNote += ' — أُلغي خصم التأخير الصباحي لهذا اليوم ✅';
+        } else if(rec && !rec.lateExcused){
+          rec.lateExcused = true; await save('sq:attendance', state.attendance);
+        }
       }
     }
     await notify(String(m.employeeId), '⏱️ تمت الموافقة على مغادرتك ✅', `${m.startTime}→${m.endTime} (${fmtDur(m.durationMin)})${dedNote}`, null, {k:'mug'});
@@ -1963,19 +2123,23 @@ function adminLeaves(){
 }
 
 function adminViolations(){
-  const sorted = state.violations.slice().reverse();
+  const q = (state.search||'').trim().toLowerCase();
+  const sorted = state.violations.filter(v=>!q || (v.employeeName||'').toLowerCase().includes(q) || (v.type||'').toLowerCase().includes(q) || (v.category||'').toLowerCase().includes(q) || (v.date||'').includes(q)).slice().reverse();
   return `<button class="btn orange" id="addVioBtn" style="margin-bottom:14px">+ تسجيل مخالفة</button>
+    <div class="searchbar"><input id="empSearch" placeholder="ابحث بالاسم أو النوع أو التصنيف..." value="${esc(state.search)}"><span class="ic">🔎</span></div>
     <div class="card"><h3>⚠️ سجل المخالفات</h3>
-    ${sorted.length===0 ? emptyLine('لا يوجد مخالفات مسجلة') :
-      sorted.map(v=>`<div class="row"><span class="lbl">${esc(v.employeeName)} — ${esc(v.type)} (${v.date})</span><span class="pill orange">${v.fine?v.fine+' د.أ':esc(v.action)}</span></div>`).join('')}
+    ${sorted.length===0 ? emptyLine('لا يوجد مخالفات مطابقة') :
+      sorted.map(v=>`<div class="row"><span class="lbl">${esc(v.employeeName)} — <b>${esc(v.category||'مخالفة')}</b>: ${esc(v.type)} (${v.date})${v.description?('<br><small style="color:#999">'+esc(v.description)+'</small>'):''}</span><span class="pill orange">${v.fine?v.fine+' د.أ':esc(v.action)}</span></div>`).join('')}
     </div>`;
 }
 
 function adminCustody(){
-  const sorted = state.custody.slice().reverse();
+  const q = (state.search||'').trim().toLowerCase();
+  const sorted = state.custody.filter(c=>!q || (c.employeeName||'').toLowerCase().includes(q) || (c.type||'').toLowerCase().includes(q) || (c.description||'').toLowerCase().includes(q)).slice().reverse();
   return `<button class="btn orange" id="addCusBtn" style="margin-bottom:14px">+ إسناد عهدة جديدة</button>
+    <div class="searchbar"><input id="empSearch" placeholder="ابحث بالاسم أو نوع العهدة..." value="${esc(state.search)}"><span class="ic">🔎</span></div>
     <div class="card"><h3>🎒 سجل العهد</h3>
-    ${sorted.length===0 ? emptyLine('لا يوجد عهد مسجلة بعد') :
+    ${sorted.length===0 ? emptyLine('لا يوجد عهد مطابقة') :
       sorted.map(c=>`
       <div class="list-item" data-cus="${c.id}">
         <div class="who"><b>${esc(c.type)}</b><small>${esc(c.employeeName)} · ${c.value||0} د.أ · ${esc(c.deliveryDate||'')}</small></div>
@@ -2030,7 +2194,11 @@ function attachAdminEvents(){
   document.querySelectorAll('[data-lvdecide]').forEach(el=> el.onclick = ()=>openLeaveDecisionModal(el.dataset.lvdecide));
   document.querySelectorAll('[data-advdecide]').forEach(el=> el.onclick = ()=>openAdvanceDecisionModal(el.dataset.advdecide));
 }
-function refreshAdminList(){ const content = document.getElementById('content'); content.innerHTML = contentView(); attachAdminEvents(); }
+function refreshAdminList(){
+  const content = document.getElementById('content'); content.innerHTML = contentView(); attachAdminEvents();
+  const el = document.getElementById('empSearch');
+  if(el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+}
 
 function openEmployeeDetail(id){
   state.detailEmployeeId = id;
@@ -2419,7 +2587,9 @@ function openAddViolationModal(){
     <div class="modal-head"><h3>تسجيل مخالفة</h3><button class="modal-close" data-close>✕</button></div>
     <label class="field-label">الموظف</label>
     <select id="vioEmp">${state.employees.map(e=>`<option value="${e.id}">#${e.id} — ${esc(e.name)}</option>`).join('')}</select>
-    <label class="field-label">نوع المخالفة</label><input id="vioType" placeholder="مثال: تأخر عن الدوام">
+    <label class="field-label">تصنيف المخالفة</label>
+    <select id="vioCat">${['مخالفات عمل','مخالفات سير','مخالفات أخرى'].map(o=>`<option>${o}</option>`).join('')}</select>
+    <label class="field-label">نوع المخالفة</label><input id="vioType" placeholder="مثال: تأخر عن الدوام / تجاوز سرعة">
     <label class="field-label">الوصف</label><textarea id="vioDesc" rows="2"></textarea>
     <label class="field-label">الإجراء المتخذ</label>
     <select id="vioAction">${['تنبيه شفوي','إنذار خطي أول','إنذار خطي ثاني','غرامة'].map(o=>`<option>${o}</option>`).join('')}</select>
@@ -2429,6 +2599,7 @@ function openAddViolationModal(){
   document.getElementById('submitVioBtn').onclick = async ()=>{
     const empId = document.getElementById('vioEmp').value; const emp = findEmp(empId);
     state.violations.push({id:'VIO-'+Date.now(), employeeId: emp.id, employeeName: emp.name,
+      category: document.getElementById('vioCat').value,
       type: document.getElementById('vioType').value || 'غير محدد',
       description: document.getElementById('vioDesc').value,
       action: document.getElementById('vioAction').value,
@@ -2436,7 +2607,7 @@ function openAddViolationModal(){
       date: todayStr()});
     await save('sq:violations', state.violations);
     await audit('تسجيل مخالفة', emp.name+': '+(document.getElementById('vioType').value||'غير محدد'));
-    await notify(String(emp.id), '⚠️ مخالفة جديدة', 'سُجلت مخالفة: '+(document.getElementById('vioType').value||'غير محدد')+' — الإجراء: '+document.getElementById('vioAction').value);
+    await notify(String(emp.id), '⚠️ مخالفة جديدة', 'سُجلت مخالفة ('+document.getElementById('vioCat').value+'): '+(document.getElementById('vioType').value||'غير محدد')+' — الإجراء: '+document.getElementById('vioAction').value);
     closeModal(); toast('تم تسجيل المخالفة'); render();
   };
 }
@@ -2504,7 +2675,8 @@ function rulesView(){
         <li>التأخير من 8:15 حتى 8:29: تُحسب الدقائق من الساعة 8:00 وتُخصم من رصيد الإجازة السنوية.</li>
         <li>التأخير من 8:30 فأكثر: يُخصم نصف يوم عمل من الراتب مباشرة.</li>
         <li>العمل الإضافي يبدأ بعد نهاية الدوام وتُحسب كل ساعة بمعدل 1.25 من أجر الساعة العادية — باستثناء المندوبين ومشرفي/مدراء المبيعات (نظامهم عمولة).</li>
-        <li>أيام العطل الرسمية: العمل يُحسب <b>يوم بيوم ونصف</b> وساعة الإضافي <b>ساعة ونصف</b> — للموظفين فقط (بدون المناديب)، ولا يُحسب تأخير في أيام العطل.</li>
+        <li>أيام العطل الرسمية: العمل يُحسب <b>يوم بيوم ونصف</b> وساعة الإضافي <b>ساعة ونصف</b> — <b>فقط لمن يداوم فعليًا ويبصم دخول وخروج من داخل الشركة</b> (بدون المناديب)، ولا يُحسب تأخير في أيام العطل.</li>
+        <li><b>المغادرة الصباحية (بداية الدوام)</b> الموافَق عليها من المدير <b>تُلغي خصم التأخير</b> لذلك اليوم — هذا هو نظام التأخير المعتمد.</li>
         <li>يمكن للمدير تعديل ساعات الدوام لأي موظف من ملفه في الإعدادات.</li>
         <li>تصل تنبيهات للمشرف والمدير عند عدم تسجيل الحضور بعد 8:30 صباحًا أو عدم تسجيل الانصراف بعد نهاية الدوام.</li>
         <li>التأخير بعد فترة السماح يُخصم من رصيد الإجازة السنوية، وإذا انتهى الرصيد يبدأ الخصم مباشرة من الراتب.</li>
@@ -2523,8 +2695,12 @@ function rulesView(){
         <li>يمكن للمدير تعديل مدة الإجازة قبل الموافقة، ويحدد مصدر الخصم: من رصيد الإجازات أو من الراتب أو بدون خصم.</li>
         <li>المغادرات تُسجَّل بالدقيقة (وقت البداية + المدة) وتصنَّف: بداية الدوام / خلال الدوام / نهاية الدوام / قرار الإدارة — بحد أقصى 3 ساعات باليوم و8 ساعات بالشهر، ويقرر المدير مصدر الخصم عند الموافقة.</li>
         <li>تصلك إشعارات داخل التطبيق وعلى الجهاز عند الموافقة أو الرفض على إجازاتك وسلفك ومغادراتك.</li>
+        <li><b>احتساب أيام الإجازة:</b> من أول يوم إجازة حتى يوم العودة للدوام — يوم العودة <b>لا يُحسب</b>. مثال: إجازة من 21/7 والعودة للدوام 22/7 = <b>يوم واحد</b>. تُطبق على جميع أنواع الإجازات.</li>
         <li>مرضية: 14 يوم قابلة للتجديد بتقرير طبي. أمومة: 10 أسابيع. زواج: أسبوع. وفاة: 3 أيام (درجة أولى) أو يوم (درجة ثانية).</li>
       </ul>`},
+    { ic:'🎉', title:'العطل الرسمية من الدولة', body:`
+      <p style="font-size:11px;color:var(--muted);margin:0 0 6px">العمل يوم عطلة رسمية يُحسب يوم بيوم ونصف — فقط لمن يداوم ويبصم دخول وخروج من داخل الشركة (لا يشمل المناديب).</p>
+      <ul>${(state.holidays||[]).slice().sort((a,b)=>a.date.localeCompare(b.date)).map(h=>`<li><b dir="ltr">${h.date}</b> — ${esc(h.name)}</li>`).join('') || '<li>لا توجد عطل مسجلة</li>'}</ul>`},
     { ic:'💳', title:'السلف', body:`
       <ul>
         <li>الحد الأسبوعي: 25% من الراتب الأساسي. الحد الشهري: 75% من الراتب الأساسي.</li>
@@ -2560,7 +2736,7 @@ function rulesView(){
         <li>تظهر كل مكافآتك مع أسبابها في صفحتك الرئيسية وضمن تفاصيل الراتب.</li>
       </ul>`},
     { ic:'📋', title:'لائحة المخالفات (مختصر)', body:`
-      <p style="font-size:11px;color:var(--muted);margin:0 0 6px">العقوبات تصاعدية وتسقط بعد 12 شهرًا بدون تكرار.</p>
+      <p style="font-size:11px;color:var(--muted);margin:0 0 6px">أنواع المخالفات الرئيسية: <b>مخالفات سير</b> · <b>مخالفات عمل</b> · <b>مخالفات أخرى</b>. العقوبات تصاعدية وتسقط بعد 12 شهرًا بدون تكرار.</p>
       <table class="vio-table">
         <tr><th>مثال</th><th>١</th><th>٢</th><th>٣</th></tr>
         <tr><td>تأخر بسيط</td><td>تنبيه</td><td>غرامة نصف يوم</td><td>غرامة يوم</td></tr>
@@ -2580,9 +2756,10 @@ function rulesView(){
     <div class="card" style="margin-top:14px">
       <h3>📞 ${T('contactUs')}</h3>
       <div class="row"><span class="lbl">🌐 الموقع</span><span class="val"><a href="https://${CONTACT.website}" target="_blank" class="linklike">${CONTACT.website}</a></span></div>
-      ${CONTACT.emails.map(e=>`<div class="row"><span class="lbl">📧</span><span class="val" style="font-size:11.5px">${e}</span></div>`).join('')}
-      ${CONTACT.phones.map(p=>`<div class="row"><span class="lbl">📱 ${p[0]}</span><span class="val" dir="ltr">${p[1]}</span></div>`).join('')}
+      ${CONTACT.emails.map(e=>`<div class="row"><span class="lbl">📧</span><span class="val" style="font-size:11.5px"><a href="mailto:${e}" class="linklike">${e}</a></span></div>`).join('')}
+      ${CONTACT.phones.map(p=>`<div class="row"><span class="lbl">📱 ${p[0]}</span><span class="val" dir="ltr"><a href="tel:${p[1]}" class="linklike">${p[1]}</a>&nbsp;<a href="https://wa.me/${p[1].replace('+','')}" target="_blank" title="واتساب" style="text-decoration:none">💬</a></span></div>`).join('')}
       <div class="row"><span class="lbl">📸 انستغرام</span><span class="val"><a href="${CONTACT.instagram}" target="_blank" class="linklike">samarqand.mena</a></span></div>
+      <div class="row"><span class="lbl">📘 فيسبوك</span><span class="val"><a href="${CONTACT.facebook}" target="_blank" class="linklike">Samarqand Co</a></span></div>
     </div>
   `;
 }
