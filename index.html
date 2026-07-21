@@ -257,14 +257,19 @@ async function fbSave(key, data){
     FB_REST = true; // ثبّت وضع التوافق للحفظات القادمة
   }
 }
+async function fbGetDoc(ref, ms){
+  // نقرأ من السيرفر مباشرة أولًا — الكاش المحلي كان بيرجّع بيانات قديمة بصمت على شبكات موبايل ضعيفة
+  try{ return await withTimeout(ref.get({source:'server'}), ms, 'load'); }
+  catch(e){ return await withTimeout(ref.get({source:'cache'}), ms, 'load-cache'); }
+}
 async function fbLoad(key){
   const base = fbKey(key);
-  const first = await withTimeout(FB_DB.collection('hr').doc(base+'__0').get(), 15000, 'load');
+  const first = await fbGetDoc(FB_DB.collection('hr').doc(base+'__0'), 15000);
   if(!first.exists) throw new Error('no key');
   const n = first.data().n || 1;
   let json = first.data().v;
   for(let i=1;i<n;i++){
-    const d = await FB_DB.collection('hr').doc(base+'__'+i).get();
+    const d = await fbGetDoc(FB_DB.collection('hr').doc(base+'__'+i), 15000);
     if(d.exists) json += d.data().v;
   }
   return JSON.parse(json);
@@ -315,7 +320,7 @@ function startLiveSync(){
    CONSTANTS
 ========================================================= */
 const TARGET_LAT = 31.9395125, TARGET_LNG = 35.9532656, GEOFENCE_M = 200;
-const APP_VERSION = "6.0";
+const APP_VERSION = "6.1";
 const ADMIN_PASSWORD = "886622";
 const SUPERVISOR_USER = "supervisor", SUPERVISOR_PASSWORD = "7890";
 const WORK_START = "08:00";
