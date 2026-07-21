@@ -183,12 +183,12 @@ function fbErrorHelp(code){
 async function initFirebase(){
   try{
     if(typeof firebase === 'undefined') throw {code:'network:sdk-not-loaded'};
-    firebase.initializeApp(firebaseConfig);
+    if(!firebase.apps || !firebase.apps.length) firebase.initializeApp(firebaseConfig);
     FB_STATUS = {ok:false, code:'auth', msg:'جاري تسجيل الدخول...'};
     await withTimeout(firebase.auth().signInAnonymously(), 15000, 'auth');
     FB_DB = firebase.firestore();
     // وضع التوافق: يحل مشكلة انحجاب الكتابة على بعض شبكات الموبايل وسفاري iOS
-    try{ FB_DB.settings({ experimentalForceLongPolling: true, merge: true }); }catch(e){ console.warn('settings:', e); }
+    try{ FB_DB.settings({ experimentalForceLongPolling: true, experimentalAutoDetectLongPolling: false, useFetchStreams: false, merge: true }); }catch(e){ console.warn('settings:', e); }
     try{ await FB_DB.enablePersistence(); }catch(e){ /* تبويب ثانٍ أو غير مدعوم — يعمل بدون كاش محلي */ }
     // فحص فعلي للكتابة والقراءة (يكشف مشكلة القواعد فورًا)
     await withTimeout(FB_DB.collection('hr').doc('connection_ping').set({t: Date.now()}), 25000, 'write-test');
@@ -273,7 +273,7 @@ function startLiveSync(){
    CONSTANTS
 ========================================================= */
 const TARGET_LAT = 31.9395125, TARGET_LNG = 35.9532656, GEOFENCE_M = 200;
-const APP_VERSION = "5.5";
+const APP_VERSION = "5.6";
 const ADMIN_PASSWORD = "886622";
 const SUPERVISOR_USER = "supervisor", SUPERVISOR_PASSWORD = "7890";
 const WORK_START = "08:00";
@@ -745,9 +745,15 @@ async function openDiagnosticsModal(){
       }catch(e){ writeOk = false; writeDetail = (e.code||e.message||'?'); }
       try{
         const db = FB_DB || firebase.firestore();
-        const d = await withTimeout(db.collection('hr').doc('employees__0').get(), 10000, 'read');
-        readOk = true; readDetail = d.exists ? 'بيانات الموظفين موجودة على السيرفر' : '⚠️ لا يوجد بيانات موظفين على السيرفر بعد — اعمل استعادة نسخة';
-      }catch(e){ readOk = false; readDetail = (e.code||e.message||'?'); }
+        const d = await withTimeout(db.collection('hr').doc('employees__0').get({source:'server'}), 10000, 'read');
+        readOk = true; readDetail = d.exists ? 'بيانات الموظفين موجودة على السيرفر (قراءة مباشرة)' : '⚠️ لا يوجد بيانات موظفين على السيرفر بعد — اعمل استعادة نسخة';
+      }catch(e){
+        try{
+          const db2 = FB_DB || firebase.firestore();
+          await db2.collection('hr').doc('employees__0').get({source:'cache'});
+          readOk = false; readDetail = 'الكاش المحلي فقط — لا يوجد اتصال فعلي بالسيرفر ('+(e.code||e.message||'?')+')';
+        }catch(_){ readOk = false; readDetail = (e.code||e.message||'?'); }
+      }
     }
   }
   add('تسجيل الدخول للسيرفر (Anonymous)', authOk, authDetail);
