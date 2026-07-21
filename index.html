@@ -315,7 +315,7 @@ function startLiveSync(){
    CONSTANTS
 ========================================================= */
 const TARGET_LAT = 31.9395125, TARGET_LNG = 35.9532656, GEOFENCE_M = 200;
-const APP_VERSION = "5.8";
+const APP_VERSION = "5.9";
 const ADMIN_PASSWORD = "886622";
 const SUPERVISOR_USER = "supervisor", SUPERVISOR_PASSWORD = "7890";
 const WORK_START = "08:00";
@@ -647,7 +647,7 @@ const I18N = {
     bonuses:'⭐ المكافآت', reqAdvance:'💵 طلب سلفة', reqLeave:'🌴 طلب إجازة',
     myCustody:'🎒 العهد المسندة لي', myViolations:'⚠️ المخالفات',
     annual:'سنوية', sick:'مرضية', thisWeek:'هذا الأسبوع', thisMonth:'هذا الشهر',
-    late:'التأخير', fines:'المخالفات', advDed:'السلف', base:'الأساسي',
+    late:'التأخير', fines:'المخالفات', advDed:'السلف', base:'الأساسي', bonusesNav:'المكافآت',
     loginTitle:'نظام الموارد البشرية · للسكاكر وتوزيع الشوكولاتة',
     employee:'موظف', supervisor:'مشرف', admin:'مدير', login:'تسجيل الدخول',
     empId:'الرقم الوظيفي', pin:'الرمز السري (4-6 أرقام)', user:'اسم المستخدم', pass:'كلمة المرور', adminPass:'كلمة مرور المدير',
@@ -663,7 +663,7 @@ const I18N = {
     bonuses:'⭐ Bonuses', reqAdvance:'💵 Request Advance', reqLeave:'🌴 Request Leave',
     myCustody:'🎒 My Custody Items', myViolations:'⚠️ Violations',
     annual:'Annual', sick:'Sick', thisWeek:'This week', thisMonth:'This month',
-    late:'Lateness', fines:'Fines', advDed:'Advances', base:'Base',
+    late:'Lateness', fines:'Fines', advDed:'Advances', base:'Base', bonusesNav:'Bonuses',
     loginTitle:'HR System · Candies & Chocolate Distribution',
     employee:'Employee', supervisor:'Supervisor', admin:'Admin', login:'Sign In',
     empId:'Employee ID', pin:'PIN (4 digits)', user:'Username', pass:'Password', adminPass:'Admin password',
@@ -1008,7 +1008,7 @@ function shellView(){
 }
 function navView(){
   if(state.role==='employee'){
-    const items=[['home','🏠',T('home')],['advances','💵',T('advances')],['leaves','🌴',T('leaves')],['profile','👤',T('profile')],['rules','📖',T('rules')]];
+    const items=[['home','🏠',T('home')],['advances','💵',T('advances')],['leaves','🌴',T('leaves')],['mycustody','🎒',T('custody')],['myviolations','⚠️',T('violations')],['mybonuses','⭐',T('bonusesNav')],['profile','👤',T('profile')],['rules','📖',T('rules')]];
     return `<div class="bottomnav">${items.map(([k,ic,lb])=>`<button data-screen="${k}" class="${state.screen===k?'active':''}"><span class="ic">${ic}</span>${lb}</button>`).join('')}</div>`;
   }
   const pc = pendingCounts();
@@ -1105,12 +1105,6 @@ function employeeHome(emp){
       <div class="profile-sub">${esc(emp.jobTitle)} · #${emp.id} · ${esc(emp.employmentType)}</div>
     </div>
 
-    <div style="display:flex;justify-content:space-around;margin:0 0 14px">
-      ${quickIcon('goCustodyIconBtn','#ffe1ef','🎒','العهد')}
-      ${quickIcon('goViolationsIconBtn','#ffedd6','⚠️','المخالفات')}
-      ${quickIcon('goBonusesIconBtn','#dff5e6','⭐','المكافآت')}
-    </div>
-
     <div class="card">
       <h3>${T('netSalary')}</h3>
       <button class="big-net" id="salaryStatBtn">${b.net} <small>د.أ</small></button>
@@ -1177,12 +1171,6 @@ function employeeHome(emp){
   `;
 }
 function emptyLine(msg){ return `<p style="font-size:12.5px;color:var(--muted);margin:4px 0">${msg}</p>`; }
-function quickIcon(id, bg, emoji, label){
-  return `<button id="${id}" style="background:none;border:none;display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;flex:1;padding:4px 0">
-    <span style="width:52px;height:52px;border-radius:50%;background:${bg};display:flex;align-items:center;justify-content:center;font-size:24px;box-shadow:0 2px 6px rgba(0,0,0,.08)">${emoji}</span>
-    <span style="font-size:11.5px;color:var(--muted);font-weight:700">${label}</span>
-  </button>`;
-}
 
 /* ---------- صفحة مخالفات الموظف ---------- */
 function employeeViolationsScreen(emp){
@@ -1386,9 +1374,7 @@ function attachEmployeeEvents(){
   const goViolationsBtn = document.getElementById('goViolationsBtn'); if(goViolationsBtn) goViolationsBtn.onclick = ()=>{ state.search=''; state.screen='myviolations'; render(); };
   const goCustodyBtn = document.getElementById('goCustodyBtn'); if(goCustodyBtn) goCustodyBtn.onclick = ()=>{ state.search=''; state.screen='mycustody'; render(); };
   const goBonusesBtn = document.getElementById('goBonusesBtn'); if(goBonusesBtn) goBonusesBtn.onclick = ()=>{ state.search=''; state.screen='mybonuses'; render(); };
-  const goCustodyIconBtn = document.getElementById('goCustodyIconBtn'); if(goCustodyIconBtn) goCustodyIconBtn.onclick = ()=>{ state.search=''; state.screen='mycustody'; render(); };
-  const goViolationsIconBtn = document.getElementById('goViolationsIconBtn'); if(goViolationsIconBtn) goViolationsIconBtn.onclick = ()=>{ state.search=''; state.screen='myviolations'; render(); };
-  const goBonusesIconBtn = document.getElementById('goBonusesIconBtn'); if(goBonusesIconBtn) goBonusesIconBtn.onclick = ()=>{ state.search=''; state.screen='mybonuses'; render(); };
+
   const backHomeBtn = document.getElementById('backHomeBtn'); if(backHomeBtn) backHomeBtn.onclick = ()=>{ state.search=''; state.screen='home'; render(); };
   const empPageSearch = document.getElementById('empPageSearch');
   if(empPageSearch) empPageSearch.oninput = e=>{
