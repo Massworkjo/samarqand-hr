@@ -320,7 +320,7 @@ function startLiveSync(){
    CONSTANTS
 ========================================================= */
 const TARGET_LAT = 31.9395125, TARGET_LNG = 35.9532656, GEOFENCE_M = 200;
-const APP_VERSION = "6.1";
+const APP_VERSION = "6.2";
 const ADMIN_PASSWORD = "886622";
 const SUPERVISOR_USER = "supervisor", SUPERVISOR_PASSWORD = "7890";
 const WORK_START = "08:00";
@@ -401,6 +401,17 @@ const SEED_EMPLOYEES = [{"id": 1, "name": "احمد نبهان", "hireDate": "01
 /* =========================================================
    STORAGE
 ========================================================= */
+async function verifyEmployeesSaved(expected){
+  if(!FB_READY) return false;
+  try{
+    const fresh = await fbLoad('sq:employees');
+    if(!Array.isArray(fresh) || fresh.length !== expected.length) return false;
+    return expected.every(e=>{
+      const f = fresh.find(x=>String(x.id)===String(e.id));
+      return f && String(f.pin)===String(e.pin);
+    });
+  }catch(e){ return false; }
+}
 async function loadOrInit(key, seed){
   if(FB_READY){
     try{ return await fbLoad(key); }
@@ -3073,9 +3084,13 @@ async function generateRandomPins(){
   const randPin = ()=>{ let p; do{ p = String(Math.floor(100000 + Math.random()*900000)); }while(used.has(p)); used.add(p); return p; };
   state.employees.forEach(e=>{ e.pin = randPin(); });
   await save('sq:employees', state.employees);
-  await audit('توليد أرقام سرية', 'أرقام عشوائية جديدة (6 أرقام) لجميع الموظفين ('+state.employees.length+')');
+  const verified = await verifyEmployeesSaved(state.employees);
+  await audit('توليد أرقام سرية', 'أرقام عشوائية جديدة (6 أرقام) لجميع الموظفين ('+state.employees.length+')'+(verified?' — تم التأكد من الحفظ':' — تعذّر التأكد من الحفظ!'));
   showModal(`
     <div class="modal-head"><h3>🎲 الأرقام السرية الجديدة</h3><button class="modal-close" data-close>✕</button></div>
+    ${verified
+      ? '<div class="note" style="border-color:var(--teal)">✅ تم التأكد بقراءة مباشرة من السيرفر: الأرقام الجديدة محفوظة فعليًا وستعمل على كل الأجهزة بعد إغلاق التطبيق وفتحه من جديد.</div>'
+      : '<div class="note" style="border-color:var(--danger)">🔴 تحذير: تعذّر التأكد من وصول الحفظ للسيرفر (مشكلة اتصال). لا تسلّم هذه الأرقام للموظفين قبل أن تعيد المحاولة وتتأكد من ظهور علامة ✅ هنا.</div>'}
     <div class="note" style="border-color:var(--orange)">⚠️ هذه القائمة تظهر الآن فقط — نزّلها كملف إكسل ووزع الأرقام على الموظفين. الأرقام محفوظة أيضًا في ملف كل موظف وفي الإكسل الشامل.</div>
     ${state.employees.map(e=>`<div class="row"><span class="lbl">${esc(e.name)} <small style="color:#999">#${e.id}</small></span><span class="val" style="font-family:monospace;font-size:15px;letter-spacing:2px">${esc(String(e.pin))}</span></div>`).join('')}
     <button class="btn" id="downloadPinsBtn">📥 تنزيل القائمة (Excel)</button>
@@ -3187,6 +3202,7 @@ async function importFromExcel(ev){
           if(r['الرقم السري']!=null && /^[0-9]{4,6}$/.test(String(r['الرقم السري']).trim())) emp.pin = String(r['الرقم السري']).trim();
         });
         await save('sq:employees', state.employees);
+        window.__empSaveVerified = await verifyEmployeesSaved(state.employees);
       }
       // — شيت العطل الرسمية
       const holWs = wb.Sheets['العطل الرسمية'];
@@ -3202,8 +3218,9 @@ async function importFromExcel(ev){
       }
       if(!empWs && !holWs){ toast('⚠️ لم أجد شيت "الموظفون" أو "العطل الرسمية" في الملف'); return; }
       await audit('رفع إكسل', `تحديث ${updated} موظف · إضافة ${added} موظف${holReplaced?' · تحديث العطل الرسمية':''}`);
-      if(FB_READY) toast(`تم الرفع للسيرفر ✅ — تحديث ${updated} · إضافة ${added}${holReplaced?' · العطل محدّثة':''}`);
-      else toast('⚠️ الملف قُرئ لكن لا يوجد اتصال بالسيرفر — التغييرات محلية فقط! اضغط على المؤشر الأحمر للفحص');
+      if(!FB_READY) toast('⚠️ الملف قُرئ لكن لا يوجد اتصال بالسيرفر — التغييرات محلية فقط! اضغط على المؤشر الأحمر للفحص');
+      else if(empWs && window.__empSaveVerified === false) toast('🔴 تحذير: الملف قُرئ لكن تعذّر التأكد من وصول الأرقام للسيرفر فعليًا — أعد المحاولة ولا توزّع الأرقام قبل التأكد');
+      else toast(`تم الرفع للسيرفر ✅ (تم التأكد بقراءة مباشرة) — تحديث ${updated} · إضافة ${added}${holReplaced?' · العطل محدّثة':''}`);
       render();
     }catch(e){ console.error(e); toast('فشل قراءة الملف: '+e.message); }
   };
