@@ -161,7 +161,23 @@ const firebaseConfig = {
   messagingSenderId: "861740278896",
   appId: "1:861740278896:web:0c6a0fe146ab7b7baf40b5"
 };
-let FB_DB = null, FB_READY = false;
+let FB_DB = null, FB_READY = false, FB_REST = false; // FB_REST: وضع الكتابة المباشرة عبر HTTP عند انحجاب قناة الـSDK
+function fbDocName(id){ return 'projects/'+firebaseConfig.projectId+'/databases/(default)/documents/hr/'+id; }
+async function fbRestCommit(writes){
+  const user = firebase.auth().currentUser;
+  if(!user) throw new Error('rest:no-auth');
+  const token = await user.getIdToken();
+  const r = await fetch('https://firestore.googleapis.com/v1/projects/'+firebaseConfig.projectId+'/databases/(default)/documents:commit', {
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+    body: JSON.stringify({writes})
+  });
+  if(!r.ok){
+    const j = await r.json().catch(()=>({}));
+    throw new Error('REST:'+r.status+':'+((j.error&&j.error.status)||''));
+  }
+  return r.json();
+}
 let FB_STATUS = {ok:false, code:'init', msg:'جاري الاتصال...'};
 function withTimeout(promise, ms, label){
   return Promise.race([promise, new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout:'+label)), ms))]);
@@ -172,6 +188,10 @@ function fbErrorHelp(code){
     return '❗ تسجيل الدخول المجهول غير مفعّل. الحل: Firebase → Authentication → Sign-in method → Anonymous → Enable → Save';
   if(String(code).includes('permission-denied') || String(code).includes('PERMISSION_DENIED'))
     return '❗ قواعد الحماية غير منشورة. الحل: Firebase → Firestore Database → Rules → الصق القواعد → Publish';
+  if(String(code).includes('RESOURCE_EXHAUSTED') || String(code).includes('resource-exhausted') || String(code).includes('REST:429'))
+    return '📊 استُهلكت حصة الكتابة المجانية اليومية في Firebase (20 ألف كتابة/يوم) — تتجدد ~الساعة 10 صباحًا بتوقيت الأردن، أو فعّل خطة Blaze من لوحة Firebase';
+  if(String(code).includes('REST:403'))
+    return '🔒 قواعد الأمان في Firestore ترفض الكتابة — راجع Rules في لوحة Firebase';
   if(String(code).includes('timeout:write') || String(code).includes('timeout:save'))
     return '📡 الشبكة تحجب قناة الكتابة — جرّب "إعادة الاتصال الآن"، وإن استمرت جرّب شبكة أخرى (WiFi/بيانات)';
   if(String(code).includes('unavailable') || String(code).includes('timeout') || String(code).includes('network'))
@@ -190,10 +210,18 @@ async function initFirebase(){
     // وضع التوافق: يحل مشكلة انحجاب الكتابة على بعض شبكات الموبايل وسفاري iOS
     try{ FB_DB.settings({ experimentalForceLongPolling: true, experimentalAutoDetectLongPolling: false, useFetchStreams: false, merge: true }); }catch(e){ console.warn('settings:', e); }
     try{ await FB_DB.enablePersistence(); }catch(e){ /* تبويب ثانٍ أو غير مدعوم — يعمل بدون كاش محلي */ }
-    // فحص فعلي للكتابة والقراءة (يكشف مشكلة القواعد فورًا)
-    await withTimeout(FB_DB.collection('hr').doc('connection_ping').set({t: Date.now()}), 25000, 'write-test');
+    // فحص فعلي للكتابة (يكشف مشكلة القواعد أو الحصة فورًا)
+    try{
+      await withTimeout(FB_DB.collection('hr').doc('connection_ping').set({t: Date.now()}), 20000, 'write-test');
+      FB_REST = false;
+    }catch(we){
+      // قناة كتابة الـSDK محجوبة — جرّب الكتابة المباشرة عبر HTTP (تكشف السبب الحقيقي أو تتجاوز الحجب)
+      await fbRestCommit([{update:{name: fbDocName('connection_ping'), fields:{t:{integerValue:String(Date.now())}}}}]);
+      FB_REST = true;
+      console.warn('SDK write blocked — REST write fallback enabled');
+    }
     FB_READY = true;
-    FB_STATUS = {ok:true, code:'ready', msg:'متصل بالسيرفر'};
+    FB_STATUS = {ok:true, code:'ready', msg: FB_REST ? 'متصل بالسيرفر (وضع التوافق)' : 'متصل بالسيرفر'};
   }catch(e){
     console.error('Firebase init failed:', e);
     FB_READY = false;
@@ -209,11 +237,25 @@ async function fbSave(key, data){
   const chunks = [];
   for(let i=0;i<json.length;i+=FB_CHUNK) chunks.push(json.slice(i,i+FB_CHUNK));
   if(chunks.length===0) chunks.push('');
+  if(FB_REST){
+    const writes = chunks.map((c,i)=>({update:{name: fbDocName(base+'__'+i), fields:{v:{stringValue:c}, n:{integerValue:String(chunks.length)}, t:{integerValue:String(Date.now())}}}}));
+    for(let i=chunks.length;i<chunks.length+5;i++) writes.push({delete: fbDocName(base+'__'+i)});
+    await fbRestCommit(writes);
+    return;
+  }
   const batch = FB_DB.batch();
   chunks.forEach((c,i)=> batch.set(FB_DB.collection('hr').doc(base+'__'+i), {v:c, n:chunks.length, t:Date.now()}));
   // احذف القطع الزائدة من حفظ سابق أكبر
   for(let i=chunks.length;i<chunks.length+5;i++) batch.delete(FB_DB.collection('hr').doc(base+'__'+i));
-  await withTimeout(batch.commit(), 15000, 'save');
+  try{
+    await withTimeout(batch.commit(), 15000, 'save');
+  }catch(se){
+    // آخر محاولة: الكتابة المباشرة عبر HTTP
+    const writes = chunks.map((c,i)=>({update:{name: fbDocName(base+'__'+i), fields:{v:{stringValue:c}, n:{integerValue:String(chunks.length)}, t:{integerValue:String(Date.now())}}}}));
+    for(let i=chunks.length;i<chunks.length+5;i++) writes.push({delete: fbDocName(base+'__'+i)});
+    await fbRestCommit(writes);
+    FB_REST = true; // ثبّت وضع التوافق للحفظات القادمة
+  }
 }
 async function fbLoad(key){
   const base = fbKey(key);
@@ -273,7 +315,7 @@ function startLiveSync(){
    CONSTANTS
 ========================================================= */
 const TARGET_LAT = 31.9395125, TARGET_LNG = 35.9532656, GEOFENCE_M = 200;
-const APP_VERSION = "5.6";
+const APP_VERSION = "5.7";
 const ADMIN_PASSWORD = "886622";
 const SUPERVISOR_USER = "supervisor", SUPERVISOR_PASSWORD = "7890";
 const WORK_START = "08:00";
@@ -731,7 +773,7 @@ async function openDiagnosticsModal(){
   const add = (label, ok, detail)=>rows.push(`<div class="row"><span class="lbl">${label}${detail?`<br><small style="color:#999;direction:ltr;display:inline-block">${esc(detail)}</small>`:''}</span><span class="pill ${ok===true?'green':ok===false?'red':'orange'}">${ok===true?'✅':ok===false?'❌':'⏳'}</span></div>`);
   add('إصدار التطبيق', true, 'v'+APP_VERSION);
   add('تحميل مكتبات Firebase', typeof firebase !== 'undefined', typeof firebase !== 'undefined' ? '' : 'SDK not loaded — امسح الكاش أو تحقق من الإنترنت');
-  let authOk = null, writeOk = null, readOk = null, authDetail='', writeDetail='', readDetail='';
+  let authOk = null, writeOk = null, readOk = null, restOk = null, authDetail='', writeDetail='', readDetail='', restDetail='';
   if(typeof firebase !== 'undefined'){
     try{
       await withTimeout(firebase.auth().signInAnonymously(), 10000, 'auth');
@@ -743,6 +785,12 @@ async function openDiagnosticsModal(){
         await withTimeout(db.collection('hr').doc('connection_ping').set({t: Date.now()}), 10000, 'write');
         writeOk = true; writeDetail = 'hr/connection_ping';
       }catch(e){ writeOk = false; writeDetail = (e.code||e.message||'?'); }
+      if(writeOk === false){
+        try{
+          await fbRestCommit([{update:{name: fbDocName('connection_ping'), fields:{t:{integerValue:String(Date.now())}}}}]);
+          restOk = true; restDetail = 'نجحت — سيعمل التطبيق بوضع التوافق'; FB_REST = true; FB_READY = true;
+        }catch(re){ restOk = false; restDetail = (re.message||'?'); }
+      }
       try{
         const db = FB_DB || firebase.firestore();
         const d = await withTimeout(db.collection('hr').doc('employees__0').get({source:'server'}), 10000, 'read');
@@ -758,13 +806,14 @@ async function openDiagnosticsModal(){
   }
   add('تسجيل الدخول للسيرفر (Anonymous)', authOk, authDetail);
   add('الكتابة على قاعدة البيانات', writeOk, writeDetail);
+  if(restOk !== null) add('الكتابة المباشرة عبر HTTP', restOk, restDetail);
   add('قراءة بيانات الموظفين', readOk, readDetail);
-  const allOk = authOk===true && writeOk===true;
+  const allOk = authOk===true && (writeOk===true || restOk===true);
   showModal(`
     <div class="modal-head"><h3>🩺 فحص الاتصال بالسيرفر</h3><button class="modal-close" data-close>✕</button></div>
     ${rows.join('')}
     <div class="note" style="margin-top:10px;${allOk?'':'border-color:var(--danger)'}">
-      ${allOk ? '🟢 كل شيء سليم — إذا كانت المشكلة مستمرة أعد فتح التطبيق.' : '🔴 '+fbErrorHelp(authOk===false?authDetail:writeDetail)}
+      ${allOk ? (restOk===true ? '🟡 قناة الـSDK محجوبة لكن تم تفعيل وضع التوافق — التطبيق يعمل بشكل كامل.' : '🟢 كل شيء سليم — إذا كانت المشكلة مستمرة أعد فتح التطبيق.') : '🔴 '+fbErrorHelp(authOk===false?authDetail:(restOk===false?restDetail:writeDetail))}
     </div>
     <button class="btn" id="reconnectBtn">🔄 إعادة الاتصال الآن</button>
   `, true);
