@@ -315,7 +315,7 @@ function startLiveSync(){
    CONSTANTS
 ========================================================= */
 const TARGET_LAT = 31.9395125, TARGET_LNG = 35.9532656, GEOFENCE_M = 200;
-const APP_VERSION = "5.7";
+const APP_VERSION = "5.8";
 const ADMIN_PASSWORD = "886622";
 const SUPERVISOR_USER = "supervisor", SUPERVISOR_PASSWORD = "7890";
 const WORK_START = "08:00";
@@ -1060,6 +1060,7 @@ function employeeScreens(){
   if(state.screen==='rules') return rulesView();
   if(state.screen==='myviolations') return employeeViolationsScreen(emp);
   if(state.screen==='mycustody') return employeeCustodyScreen(emp);
+  if(state.screen==='mybonuses') return employeeBonusesScreen(emp);
   return employeeHome(emp);
 }
 function todaysRecord(empId){ return state.attendance.find(a=>String(a.employeeId)===String(empId) && a.date===todayStr()); }
@@ -1102,6 +1103,12 @@ function employeeHome(emp){
       ${emp.photo ? `<img src="${emp.photo}" style="width:76px;height:76px;border-radius:50%;object-fit:cover;border:3px solid var(--teal);margin:0 auto 6px;display:block" alt="">` : `<div class="profile-badge">${String(emp.id).padStart(2,'0')}</div>`}
       <div class="profile-name">${esc(emp.name)}</div>
       <div class="profile-sub">${esc(emp.jobTitle)} · #${emp.id} · ${esc(emp.employmentType)}</div>
+    </div>
+
+    <div style="display:flex;justify-content:space-around;margin:0 0 14px">
+      ${quickIcon('goCustodyIconBtn','#ffe1ef','🎒','العهد')}
+      ${quickIcon('goViolationsIconBtn','#ffedd6','⚠️','المخالفات')}
+      ${quickIcon('goBonusesIconBtn','#dff5e6','⭐','المكافآت')}
     </div>
 
     <div class="card">
@@ -1156,7 +1163,7 @@ function employeeHome(emp){
     </div>
 
     <div class="card">
-      <h3>${T('bonuses')}</h3>
+      <h3 style="display:flex;justify-content:space-between;align-items:center">${T('bonuses')} <button class="linklike" id="goBonusesBtn" style="background:none;border:none;font-size:12px;cursor:pointer;color:var(--teal-dark);font-weight:700">التفاصيل ›</button></h3>
       ${state.bonuses.filter(b=>String(b.employeeId)===String(emp.id)).length===0 ? emptyLine('لا توجد مكافآت بعد — استمر بالعمل الجيد 💪') :
         state.bonuses.filter(b=>String(b.employeeId)===String(emp.id)).slice().reverse().slice(0,10).map(b=>`
         <div class="row"><span class="lbl">${b.date} — ${esc(b.type)}${b.note?('<br><small style=\"color:#999\">'+esc(b.note)+'</small>'):''}</span><span class="val" style="color:#1f8f63">+${b.amount} د.أ</span></div>`).join('')}
@@ -1170,6 +1177,12 @@ function employeeHome(emp){
   `;
 }
 function emptyLine(msg){ return `<p style="font-size:12.5px;color:var(--muted);margin:4px 0">${msg}</p>`; }
+function quickIcon(id, bg, emoji, label){
+  return `<button id="${id}" style="background:none;border:none;display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;flex:1;padding:4px 0">
+    <span style="width:52px;height:52px;border-radius:50%;background:${bg};display:flex;align-items:center;justify-content:center;font-size:24px;box-shadow:0 2px 6px rgba(0,0,0,.08)">${emoji}</span>
+    <span style="font-size:11.5px;color:var(--muted);font-weight:700">${label}</span>
+  </button>`;
+}
 
 /* ---------- صفحة مخالفات الموظف ---------- */
 function employeeViolationsScreen(emp){
@@ -1236,6 +1249,36 @@ function employeeCustodyScreen(emp){
         </div>`).join('')}
     </div>
     <div class="note" style="margin-top:10px">⚠️ أي فقدان أو تلف ناتج عن إهمال قد يُخصم حسب لائحة العهد. عند نقل العهدة لموظف آخر يتم توثيقها من الإدارة.</div>
+  `;
+}
+
+/* ---------- صفحة مكافآت الموظف ---------- */
+function employeeBonusesScreen(emp){
+  const q = (state.search||'').trim().toLowerCase();
+  let list = state.bonuses.filter(b=>String(b.employeeId)===String(emp.id)).slice().reverse();
+  if(q) list = list.filter(b=> (b.type||'').toLowerCase().includes(q) || (b.note||'').toLowerCase().includes(q) || (b.date||'').includes(q));
+  const all = state.bonuses.filter(b=>String(b.employeeId)===String(emp.id));
+  const totalAmt = Math.round(all.reduce((s,b)=>s+(b.amount||0),0)*100)/100;
+  return `
+    <div style="display:flex;align-items:center;gap:8px;margin:0 0 12px">
+      <button class="btn ghost" id="backHomeBtn" style="width:auto;padding:6px 12px;font-size:13px">‹ رجوع</button>
+      <h3 style="margin:0;color:var(--teal-dark)">⭐ مكافآتي</h3>
+    </div>
+    <div class="grid2" style="margin-bottom:12px">
+      <div class="stat"><b>${all.length}</b><span>عدد المكافآت</span></div>
+      <div class="stat"><b style="color:#1f8f63">${totalAmt}</b><span>المجموع (د.أ)</span></div>
+    </div>
+    <div class="searchbar"><input id="empPageSearch" placeholder="ابحث بالنوع أو السبب أو التاريخ..." value="${esc(state.search)}"><span class="ic">🔎</span></div>
+    <div class="card"><h3>السجل الكامل</h3>
+      ${list.length===0 ? emptyLine(q?'لا نتائج مطابقة للبحث':'لا توجد مكافآت بعد — استمر بالعمل الجيد 💪') :
+        list.map(b=>`
+        <div class="row" style="align-items:flex-start">
+          <span class="lbl">${b.date} — <b>${esc(b.type)}</b>
+            ${b.note?('<br><small style="color:#999">السبب: '+esc(b.note)+'</small>'):''}
+          </span>
+          <span class="val" style="color:#1f8f63;font-weight:800">+${b.amount} د.أ</span>
+        </div>`).join('')}
+    </div>
   `;
 }
 
@@ -1342,6 +1385,10 @@ function attachEmployeeEvents(){
   const goLeavesBtn = document.getElementById('goLeavesBtn'); if(goLeavesBtn) goLeavesBtn.onclick = ()=>{ state.screen='leaves'; render(); };
   const goViolationsBtn = document.getElementById('goViolationsBtn'); if(goViolationsBtn) goViolationsBtn.onclick = ()=>{ state.search=''; state.screen='myviolations'; render(); };
   const goCustodyBtn = document.getElementById('goCustodyBtn'); if(goCustodyBtn) goCustodyBtn.onclick = ()=>{ state.search=''; state.screen='mycustody'; render(); };
+  const goBonusesBtn = document.getElementById('goBonusesBtn'); if(goBonusesBtn) goBonusesBtn.onclick = ()=>{ state.search=''; state.screen='mybonuses'; render(); };
+  const goCustodyIconBtn = document.getElementById('goCustodyIconBtn'); if(goCustodyIconBtn) goCustodyIconBtn.onclick = ()=>{ state.search=''; state.screen='mycustody'; render(); };
+  const goViolationsIconBtn = document.getElementById('goViolationsIconBtn'); if(goViolationsIconBtn) goViolationsIconBtn.onclick = ()=>{ state.search=''; state.screen='myviolations'; render(); };
+  const goBonusesIconBtn = document.getElementById('goBonusesIconBtn'); if(goBonusesIconBtn) goBonusesIconBtn.onclick = ()=>{ state.search=''; state.screen='mybonuses'; render(); };
   const backHomeBtn = document.getElementById('backHomeBtn'); if(backHomeBtn) backHomeBtn.onclick = ()=>{ state.search=''; state.screen='home'; render(); };
   const empPageSearch = document.getElementById('empPageSearch');
   if(empPageSearch) empPageSearch.oninput = e=>{
