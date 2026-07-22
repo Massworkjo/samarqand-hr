@@ -239,20 +239,20 @@ async function fbSave(key, data){
   if(chunks.length===0) chunks.push('');
   if(FB_REST){
     const writes = chunks.map((c,i)=>({update:{name: fbDocName(base+'__'+i), fields:{v:{stringValue:c}, n:{integerValue:String(chunks.length)}, t:{integerValue:String(Date.now())}}}}));
-    for(let i=chunks.length;i<chunks.length+5;i++) writes.push({delete: fbDocName(base+'__'+i)});
+    for(let i=chunks.length;i<chunks.length+1;i++) writes.push({delete: fbDocName(base+'__'+i)});
     await fbRestCommit(writes);
     return;
   }
   const batch = FB_DB.batch();
   chunks.forEach((c,i)=> batch.set(FB_DB.collection('hr').doc(base+'__'+i), {v:c, n:chunks.length, t:Date.now()}));
   // احذف القطع الزائدة من حفظ سابق أكبر
-  for(let i=chunks.length;i<chunks.length+5;i++) batch.delete(FB_DB.collection('hr').doc(base+'__'+i));
+  for(let i=chunks.length;i<chunks.length+1;i++) batch.delete(FB_DB.collection('hr').doc(base+'__'+i));
   try{
     await withTimeout(batch.commit(), 15000, 'save');
   }catch(se){
     // آخر محاولة: الكتابة المباشرة عبر HTTP
     const writes = chunks.map((c,i)=>({update:{name: fbDocName(base+'__'+i), fields:{v:{stringValue:c}, n:{integerValue:String(chunks.length)}, t:{integerValue:String(Date.now())}}}}));
-    for(let i=chunks.length;i<chunks.length+5;i++) writes.push({delete: fbDocName(base+'__'+i)});
+    for(let i=chunks.length;i<chunks.length+1;i++) writes.push({delete: fbDocName(base+'__'+i)});
     await fbRestCommit(writes);
     FB_REST = true; // ثبّت وضع التوافق للحفظات القادمة
   }
@@ -320,9 +320,10 @@ function startLiveSync(){
    CONSTANTS
 ========================================================= */
 const TARGET_LAT = 31.9395125, TARGET_LNG = 35.9532656, GEOFENCE_M = 200;
-const APP_VERSION = "6.2";
-const ADMIN_PASSWORD = "886622";
-const SUPERVISOR_USER = "supervisor", SUPERVISOR_PASSWORD = "7890";
+const APP_VERSION = "6.3";
+const ADMIN_PASSWORD = "448866";
+const SUPERVISOR_USER = "supervisor", SUPERVISOR_PASSWORD = "774411";
+function randomPin6(){ return String(Math.floor(100000 + Math.random()*900000)); }
 const WORK_START = "08:00";
 const WORK_END = { "إداري": "18:00", "مندوب": "17:00" };
 const GRACE_MIN = 14;                // 8:00-8:14 لا يوجد خصم
@@ -506,7 +507,14 @@ function monthlyAdvUsed(emp){
     return d.getMonth()===now.getMonth() && d.getFullYear()===now.getFullYear();
   }).reduce((s,a)=>s+a.amount,0)*100)/100;
 }
-function daysBetween(d1,d2){ return Math.round((new Date(d2)-new Date(d1))/86400000)+1; }
+function monthlyMugUsed(emp){
+  const now = new Date();
+  return state.mughadarat.filter(m=>{
+    if(String(m.employeeId)!==String(emp.id) || m.status!=='موافق عليها') return false;
+    const d = new Date(m.date);
+    return d.getMonth()===now.getMonth() && d.getFullYear()===now.getFullYear();
+  }).reduce((s,m)=>s+m.durationMin,0);
+}
 function leaveDays(d1,d2){ return Math.max(1, Math.round((new Date(d2)-new Date(d1))/86400000)); } // يوم العودة لا يُحسب
 function approvedMorningMug(empId, dateStr){
   return state.mughadarat.find(m=>String(m.employeeId)===String(empId) && m.date===dateStr && m.timing==='بداية الدوام' && m.status==='موافق عليها');
@@ -527,13 +535,15 @@ function actorName(){
 async function notify(to, title, body, tag, link){
   const targets = Array.isArray(to) ? to : [to];
   const now = new Date();
+  let added = false;
   targets.forEach(t=>{
     if(tag && state.notifications.some(n=>n.tag===tag && String(n.to)===String(t))) return; // dedup
     state.notifications.push({id:'NTF-'+Date.now()+Math.random().toString(16).slice(2,6),
       to:String(t), title, body, tag:tag||null, link:link||null, read:false, date:todayStr(), time:nowTime()});
+    added = true;
   });
   if(state.notifications.length>300) state.notifications = state.notifications.slice(-300);
-  await save('sq:notifications', state.notifications);
+  if(added) await save('sq:notifications', state.notifications);
   // إشعار المتصفح على الموبايل (يعمل والتطبيق مفتوح أو بالخلفية)
   const meTarget = state.role==='admin' ? 'admin' : state.role==='supervisor' ? 'supervisor' : String(state.currentEmployee);
   if(targets.map(String).includes(meTarget) && 'Notification' in window && Notification.permission==='granted'){
@@ -618,19 +628,35 @@ async function audit(action, details){
 }
 
 /* ---------- مراقبة عدم البصم ---------- */
-function checkMissedClocks(){
+async function checkMissedClocks(){
   const today = todayStr();
   if(isFriday(today) || isHoliday(today)) return;
   const nowM = timeToMin(nowTime());
+  const pending = [];
   state.employees.filter(e=>e.status==='نشط').forEach(e=>{
     const rec = state.attendance.find(a=>String(a.employeeId)===String(e.id) && a.date===today);
     if(nowM >= timeToMin(MISS_IN_ALERT) && (!rec || !rec.timeIn)){
-      notify(['admin','supervisor'], '⏰ لم يسجل حضوره', `${e.name} (#${e.id}) لم يسجل الحضور حتى ${MISS_IN_ALERT}`, 'missin-'+today+'-'+e.id, {k:'att'});
+      pending.push({title:'⏰ لم يسجل حضوره', body:`${e.name} (#${e.id}) لم يسجل الحضور حتى ${MISS_IN_ALERT}`, tag:'missin-'+today+'-'+e.id});
     }
     if(rec && rec.timeIn && !rec.timeOut && nowM > timeToMin(empWorkEnd(e))+10){
-      notify(['admin','supervisor'], '🚪 لم يسجل انصرافه', `${e.name} (#${e.id}) لم يسجل الانصراف بعد نهاية دوامه ${empWorkEnd(e)}`, 'missout-'+today+'-'+e.id, {k:'att'});
+      pending.push({title:'🚪 لم يسجل انصرافه', body:`${e.name} (#${e.id}) لم يسجل الانصراف بعد نهاية دوامه ${empWorkEnd(e)}`, tag:'missout-'+today+'-'+e.id});
     }
   });
+  if(pending.length===0) return;
+  let added = false;
+  pending.forEach(p=>{
+    ['admin','supervisor'].forEach(t=>{
+      if(state.notifications.some(n=>n.tag===p.tag && String(n.to)===String(t))) return; // dedup
+      state.notifications.push({id:'NTF-'+Date.now()+Math.random().toString(16).slice(2,6),
+        to:t, title:p.title, body:p.body, tag:p.tag, link:{k:'att'}, read:false, date:today, time:nowTime()});
+      added = true;
+    });
+  });
+  if(!added) return;
+  if(state.notifications.length>300) state.notifications = state.notifications.slice(-300);
+  await save('sq:notifications', state.notifications);
+  const bell = document.getElementById('notifBadge');
+  if(bell) updateBellBadge();
 }
 function startWatchers(){
   clearInterval(window.__missTimer);
@@ -682,7 +708,7 @@ const I18N = {
     late:'Lateness', fines:'Fines', advDed:'Advances', base:'Base', bonusesNav:'Bonuses',
     loginTitle:'HR System · Candies & Chocolate Distribution',
     employee:'Employee', supervisor:'Supervisor', admin:'Admin', login:'Sign In',
-    empId:'Employee ID', pin:'PIN (4 digits)', user:'Username', pass:'Password', adminPass:'Admin password',
+    empId:'Employee ID', pin:'PIN (4-6 digits)', user:'Username', pass:'Password', adminPass:'Admin password',
     bioLogin:'🔐 Biometric Login', productOfDay:'🍬 Product of the Day', gotIt:'Got it!',
     contactUs:'Contact Us', logout:'Sign out',
   }
@@ -749,6 +775,13 @@ async function init(){
   state.deductions = await loadOrInit('sq:deductions', []);
   state.bonuses = await loadOrInit('sq:bonuses', []);
   state.config = await loadOrInit('sq:config', {adminPassword: ADMIN_PASSWORD, supervisorUser: SUPERVISOR_USER, supervisorPassword: SUPERVISOR_PASSWORD, focusProduct: null});
+  // ترحيل لمرة واحدة: كلمات سر جديدة بطلب الإدارة + دخول المشرف بكلمة سر فقط (بدون اسم مستخدم) — إصدار 6.3
+  if(!state.config.pwVersion || state.config.pwVersion < 2){
+    state.config.adminPassword = '448866';
+    state.config.supervisorPassword = '774411';
+    state.config.pwVersion = 2;
+    await save('sq:config', state.config);
+  }
   // ترحيل لمرة واحدة: كلمة سر المدير الجديدة 886622 (بطلب من الإدارة)
   if(state.config.adminPassword === '445566'){
     state.config.adminPassword = '886622';
@@ -863,8 +896,7 @@ function loginView(){
         <label class="field-label">${T('pin')}</label>
         <input id="loginPin" type="password" inputmode="numeric" maxlength="6" placeholder="••••">
       ` : state.loginRole==='supervisor' ? `
-        <label class="field-label">${T('user')}</label><input id="loginUser" type="text" value="supervisor">
-        <label class="field-label">${T('pass')}</label><input id="loginPass" type="password" placeholder="••••">
+        <label class="field-label">${T('adminPass')}</label><input id="loginPass" type="password" placeholder="••••••">
       ` : `
         <label class="field-label">${T('adminPass')}</label><input id="loginPass" type="password" placeholder="••••••">
       `}
@@ -894,8 +926,8 @@ function doLogin(){
     const pass = document.getElementById('loginPass').value;
     if(pass===(state.config?state.config.adminPassword:ADMIN_PASSWORD)){ state.role='admin'; state.screen='employees'; render(); requestNotifPermission(); showPendingApprovalsModal(); } else errEl.textContent = state.lang==='ar'?'كلمة المرور غير صحيحة':'Incorrect password';
   } else if(state.loginRole==='supervisor'){
-    const user = document.getElementById('loginUser').value.trim(), pass = document.getElementById('loginPass').value;
-    if(user===(state.config?state.config.supervisorUser:SUPERVISOR_USER) && pass===(state.config?state.config.supervisorPassword:SUPERVISOR_PASSWORD)){ state.role='supervisor'; state.screen='home'; render(); requestNotifPermission(); showPendingApprovalsModal(); } else errEl.textContent = state.lang==='ar'?'بيانات الدخول غير صحيحة':'Invalid credentials';
+    const pass = document.getElementById('loginPass').value;
+    if(pass===(state.config?state.config.supervisorPassword:SUPERVISOR_PASSWORD)){ state.role='supervisor'; state.screen='home'; render(); requestNotifPermission(); showPendingApprovalsModal(); } else errEl.textContent = state.lang==='ar'?'كلمة المرور غير صحيحة':'Incorrect password';
   } else {
     const id = document.getElementById('loginId').value.trim(), pin = document.getElementById('loginPin').value.trim();
     const emp = findEmp(id);
@@ -1576,6 +1608,7 @@ function openMughadaraModal(){
     if(!startT){ toast('حدد وقت البداية'); return; }
     if(dur<=0){ toast('حدد مدة المغادرة'); return; }
     if(dur>180){ toast('الحد الأقصى للمغادرة 3 ساعات باليوم'); return; }
+    if(monthlyMugUsed(emp) + dur > 480){ toast('المدة تتجاوز الحد الشهري للمغادرات (8 ساعات)'); return; }
     if(!reason){ toast('اكتب سبب المغادرة'); return; }
     const endT = minToTime(timeToMin(startT)+dur);
     const btn = document.getElementById('submitMugBtn'); btn.disabled = true; btn.textContent = '⏳ جاري الإرسال...';
@@ -1604,7 +1637,7 @@ function openRequestAdvanceModal(){
       الحد الأسبوعي: <b>${weeklyAdvCap(emp)} د.أ</b> · الحد الشهري: <b>${monthlyAdvCap(emp)} د.أ</b>
     </div>
     <label class="field-label">المبلغ المطلوب (د.أ)</label>
-    <input id="advAmount" type="number" min="1" max="${monthlyAdvCap(emp)}">
+    <input id="advAmount" type="number" min="1" max="${Math.max(0, Math.min(weeklyAdvCap(emp)-weeklyAdvUsed(emp), monthlyAdvCap(emp)-monthlyAdvUsed(emp)))}">
     <label class="field-label">ملاحظات (اختياري)</label>
     <textarea id="advNote" rows="2" placeholder="اذكر سبب الطلب إن أردت"></textarea>
     <p style="font-size:11px;color:var(--muted);margin:-4px 0 10px">يحدد المدير خطة التقسيط (دفعة واحدة أو عدة دفعات) عند الموافقة على الطلب.</p>
@@ -1613,7 +1646,8 @@ function openRequestAdvanceModal(){
   document.getElementById('submitAdvBtn').onclick = async ()=>{
     const amt = parseFloat(document.getElementById('advAmount').value);
     if(!amt || amt<=0){ toast('أدخل مبلغًا صحيحًا'); return; }
-    if(amt > monthlyAdvCap(emp)){ toast('المبلغ يتجاوز الحد الشهري المسموح'); return; }
+    if(weeklyAdvUsed(emp) + amt > weeklyAdvCap(emp)){ toast('المبلغ يتجاوز الحد الأسبوعي المسموح (بعد احتساب ما تم صرفه)'); return; }
+    if(monthlyAdvUsed(emp) + amt > monthlyAdvCap(emp)){ toast('المبلغ يتجاوز الحد الشهري المسموح (بعد احتساب ما تم صرفه)'); return; }
     const isRep = emp.category==='مندوب';
     const btnA = document.getElementById('submitAdvBtn'); if(btnA){ btnA.disabled = true; btnA.textContent = '⏳ جاري الإرسال...'; }
     try{
@@ -2452,7 +2486,7 @@ function openEmployeeForm(id){
     </div>
 
     <div class="section-title">دخول التطبيق</div>
-    <div class="field"><label class="field-label">الرمز السري (4-6 أرقام)</label><input id="f_pin" maxlength="6" inputmode="numeric" value="${emp?emp.pin:'1234'}"></div>
+    <div class="field"><label class="field-label">الرمز السري (4-6 أرقام)</label><input id="f_pin" maxlength="6" inputmode="numeric" value="${emp?emp.pin:randomPin6()}"></div>
 
     <div class="btnrow">
       <button class="btn" id="saveEmpBtn">${emp?'حفظ التعديلات':'إضافة الموظف'}</button>
@@ -2477,6 +2511,8 @@ async function saveEmployeeForm(){
   const idVal = document.getElementById('f_id').value;
   const name = document.getElementById('f_name').value.trim();
   if(!idVal || !name){ toast('الرقم الوظيفي والاسم مطلوبان'); return; }
+  const pinVal = document.getElementById('f_pin').value.trim();
+  if(pinVal && !/^[0-9]{4,6}$/.test(pinVal)){ toast('الرمز السري يجب أن يكون 4 إلى 6 أرقام'); return; }
   const editing = state.editingEmployeeId;
   if(!editing && findEmp(idVal)){ toast('يوجد موظف بهذا الرقم الوظيفي مسبقًا'); return; }
   const prior = editing ? findEmp(editing) : null;
@@ -2509,7 +2545,7 @@ async function saveEmployeeForm(){
     sickLeaveUsed: prior ? prior.sickLeaveUsed : 0,
     weeklyAdvCap: prior ? prior.weeklyAdvCap : Math.round((parseFloat(document.getElementById('f_baseSalary').value)||0)*WEEKLY_ADV_PCT*100)/100,
     monthlyAdvCap: prior ? prior.monthlyAdvCap : Math.round((parseFloat(document.getElementById('f_baseSalary').value)||0)*MONTHLY_ADV_PCT*100)/100,
-    pin: document.getElementById('f_pin').value || '1234',
+    pin: pinVal || randomPin6(),
     photo: window.__formPhoto || (prior ? prior.photo : null),
     workStart: document.getElementById('f_workStart').value || (prior ? prior.workStart : null) || null,
     workEnd: document.getElementById('f_workEnd').value || (prior ? prior.workEnd : null) || null,
@@ -2612,7 +2648,7 @@ function openLeaveDecisionModal(id){
   if(!editable) return;
   const updDays = ()=>{
     const s = document.getElementById('lvDecStart').value, e = document.getElementById('lvDecEnd').value;
-    if(s&&e&&new Date(e)>=new Date(s)) document.getElementById('lvDecDays').textContent = daysBetween(s,e);
+    if(s&&e&&new Date(e)>=new Date(s)) document.getElementById('lvDecDays').textContent = leaveDays(s,e);
   };
   document.getElementById('lvDecStart').onchange = updDays;
   document.getElementById('lvDecEnd').onchange = updDays;
@@ -2626,7 +2662,7 @@ async function decideLeave(id, status){
     // المدير يستطيع تعديل المدة قبل الموافقة
     const sEl = document.getElementById('lvDecStart'), eEl = document.getElementById('lvDecEnd');
     if(sEl && eEl && sEl.value && eEl.value && new Date(eEl.value)>=new Date(sEl.value)){
-      const newDays = daysBetween(sEl.value, eEl.value);
+      const newDays = leaveDays(sEl.value, eEl.value);
       if(sEl.value!==lv.startDate || eEl.value!==lv.endDate){
         lv.origStartDate = lv.origStartDate||lv.startDate;
         lv.origEndDate = lv.origEndDate||lv.endDate;
@@ -3049,10 +3085,9 @@ function openPasswordsModal(){
   showModal(`
     <div class="modal-head"><h3>🔐 كلمات السر</h3><button class="modal-close" data-close>✕</button></div>
     <div class="section-title">حسابات الإدارة</div>
-    <label class="field-label">كلمة سر المدير</label>
-    <input id="cfgAdminPass" value="${esc(state.config.adminPassword)}">
+    <p style="font-size:11px;color:var(--muted);margin:0 0 8px">دخول المدير والمشرف بكلمة سر فقط (بدون اسم مستخدم).</p>
     <div class="grid2">
-      <div class="field"><label class="field-label">اسم مستخدم المشرف</label><input id="cfgSupUser" value="${esc(state.config.supervisorUser)}"></div>
+      <div class="field"><label class="field-label">كلمة سر المدير</label><input id="cfgAdminPass" value="${esc(state.config.adminPassword)}"></div>
       <div class="field"><label class="field-label">كلمة سر المشرف</label><input id="cfgSupPass" value="${esc(state.config.supervisorPassword)}"></div>
     </div>
     <button class="btn" id="saveCfgPassBtn">حفظ كلمات سر الإدارة</button>
@@ -3067,10 +3102,9 @@ function openPasswordsModal(){
   `, true);
   document.getElementById('saveCfgPassBtn').onclick = async ()=>{
     const ap = document.getElementById('cfgAdminPass').value.trim();
-    const su = document.getElementById('cfgSupUser').value.trim();
     const sp = document.getElementById('cfgSupPass').value.trim();
-    if(!ap || !su || !sp){ toast('لا يمكن ترك أي حقل فارغًا'); return; }
-    state.config.adminPassword = ap; state.config.supervisorUser = su; state.config.supervisorPassword = sp;
+    if(!ap || !sp){ toast('لا يمكن ترك أي حقل فارغًا'); return; }
+    state.config.adminPassword = ap; state.config.supervisorPassword = sp;
     await save('sq:config', state.config);
     await audit('تغيير كلمات سر الإدارة', 'تم تحديث بيانات دخول المدير/المشرف');
     closeModal(); toast('تم حفظ كلمات السر ✅ (تنطبق على كل الأجهزة)');
@@ -3187,7 +3221,7 @@ async function importFromExcel(ev){
           if(isNew){
             emp = {id: id, name:'', jobTitle:'', department:'', category:'إداري', employmentType:'شهري', status:'نشط',
               hireDate: todayStr(), nationalId:'', phone:'', governorate:'', address:'', supervisor:'',
-              baseSalary:0, otherAllowances:0, healthInsurance:0, leaveUsed:0, sickLeaveUsed:0, pin:'1234', photo:null, workStart:null, workEnd:null};
+              baseSalary:0, otherAllowances:0, healthInsurance:0, leaveUsed:0, sickLeaveUsed:0, pin:randomPin6(), photo:null, workStart:null, workEnd:null};
             state.employees.push(emp); added++;
           } else updated++;
           const map = {'الاسم':'name','المسمى':'jobTitle','القسم':'department','الفئة':'category','نوع التوظيف':'employmentType',
