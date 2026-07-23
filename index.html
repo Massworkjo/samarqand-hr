@@ -320,9 +320,9 @@ function startLiveSync(){
    CONSTANTS
 ========================================================= */
 const TARGET_LAT = 31.9395125, TARGET_LNG = 35.9532656, GEOFENCE_M = 200;
-const APP_VERSION = "6.3";
-const ADMIN_PASSWORD = "448866";
-const SUPERVISOR_USER = "supervisor", SUPERVISOR_PASSWORD = "774411";
+const APP_VERSION = "6.4";
+const ADMIN_PASSWORD = "886622";
+const SUPERVISOR_USER = "supervisor", SUPERVISOR_PASSWORD = "7890";
 function randomPin6(){ return String(Math.floor(100000 + Math.random()*900000)); }
 const WORK_START = "08:00";
 const WORK_END = { "إداري": "18:00", "مندوب": "17:00" };
@@ -412,6 +412,22 @@ async function verifyEmployeesSaved(expected){
       return f && String(f.pin)===String(e.pin);
     });
   }catch(e){ return false; }
+}
+/* ---------- حفظ آمن لقائمة الموظفين (يمنع فقدان بيانات بسبب جهاز بنسخة قديمة محليًا) ---------- */
+const PENDING_DELETED_EMP_IDS = new Set();
+async function saveEmployees(){
+  if(FB_READY){
+    try{
+      const fresh = await fbLoad('sq:employees');
+      if(Array.isArray(fresh)){
+        const byId = new Map(fresh.map(e=>[String(e.id), e]));
+        state.employees.forEach(e=> byId.set(String(e.id), e)); // تعديلاتنا المحلية تُطبَّق فوق أحدث نسخة من السيرفر
+        PENDING_DELETED_EMP_IDS.forEach(id=> byId.delete(String(id)));
+        state.employees = Array.from(byId.values());
+      }
+    }catch(e){ console.error('دمج قائمة الموظفين قبل الحفظ فشل — سيتم الحفظ بالنسخة المحلية فقط', e); }
+  }
+  await save('sq:employees', state.employees);
 }
 async function loadOrInit(key, seed){
   if(FB_READY){
@@ -739,7 +755,7 @@ async function deductFromLeaveOrSalary(emp, dayFraction, reasonLabel){
     state.deductions.push({id:dedId, employeeId:emp.id, employeeName:emp.name, date: todayStr(), amount: fromSalary, reason: reasonLabel+' (تجاوز رصيد الإجازة)'});
     await save('sq:deductions', state.deductions);
   }
-  await save('sq:employees', state.employees);
+  await saveEmployees();
   return {fromLeave, fromSalary, dedId};
 }
 
@@ -775,13 +791,6 @@ async function init(){
   state.deductions = await loadOrInit('sq:deductions', []);
   state.bonuses = await loadOrInit('sq:bonuses', []);
   state.config = await loadOrInit('sq:config', {adminPassword: ADMIN_PASSWORD, supervisorUser: SUPERVISOR_USER, supervisorPassword: SUPERVISOR_PASSWORD, focusProduct: null});
-  // ترحيل لمرة واحدة: كلمات سر جديدة بطلب الإدارة + دخول المشرف بكلمة سر فقط (بدون اسم مستخدم) — إصدار 6.3
-  if(!state.config.pwVersion || state.config.pwVersion < 2){
-    state.config.adminPassword = '448866';
-    state.config.supervisorPassword = '774411';
-    state.config.pwVersion = 2;
-    await save('sq:config', state.config);
-  }
   // ترحيل لمرة واحدة: كلمة سر المدير الجديدة 886622 (بطلب من الإدارة)
   if(state.config.adminPassword === '445566'){
     state.config.adminPassword = '886622';
@@ -791,7 +800,7 @@ async function init(){
   state.mughadarat = await loadOrInit('sq:mughadarat', []);
   state.holidays = await loadOrInit('sq:holidays', SEED_HOLIDAYS);
   state.audit = await loadOrInit('sq:audit', []);
-  if(migrated) await save('sq:employees', state.employees);
+  if(migrated) await saveEmployees();
   startWatchers();
   startLiveSync();
   render();
@@ -896,7 +905,8 @@ function loginView(){
         <label class="field-label">${T('pin')}</label>
         <input id="loginPin" type="password" inputmode="numeric" maxlength="6" placeholder="••••">
       ` : state.loginRole==='supervisor' ? `
-        <label class="field-label">${T('adminPass')}</label><input id="loginPass" type="password" placeholder="••••••">
+        <label class="field-label">${T('user')}</label><input id="loginUser" type="text" value="supervisor">
+        <label class="field-label">${T('pass')}</label><input id="loginPass" type="password" placeholder="••••">
       ` : `
         <label class="field-label">${T('adminPass')}</label><input id="loginPass" type="password" placeholder="••••••">
       `}
@@ -926,8 +936,8 @@ function doLogin(){
     const pass = document.getElementById('loginPass').value;
     if(pass===(state.config?state.config.adminPassword:ADMIN_PASSWORD)){ state.role='admin'; state.screen='employees'; render(); requestNotifPermission(); showPendingApprovalsModal(); } else errEl.textContent = state.lang==='ar'?'كلمة المرور غير صحيحة':'Incorrect password';
   } else if(state.loginRole==='supervisor'){
-    const pass = document.getElementById('loginPass').value;
-    if(pass===(state.config?state.config.supervisorPassword:SUPERVISOR_PASSWORD)){ state.role='supervisor'; state.screen='home'; render(); requestNotifPermission(); showPendingApprovalsModal(); } else errEl.textContent = state.lang==='ar'?'كلمة المرور غير صحيحة':'Incorrect password';
+    const user = document.getElementById('loginUser').value.trim(), pass = document.getElementById('loginPass').value;
+    if(user===(state.config?state.config.supervisorUser:SUPERVISOR_USER) && pass===(state.config?state.config.supervisorPassword:SUPERVISOR_PASSWORD)){ state.role='supervisor'; state.screen='home'; render(); requestNotifPermission(); showPendingApprovalsModal(); } else errEl.textContent = state.lang==='ar'?'بيانات الدخول غير صحيحة':'Invalid credentials';
   } else {
     const id = document.getElementById('loginId').value.trim(), pin = document.getElementById('loginPin').value.trim();
     const emp = findEmp(id);
@@ -952,7 +962,7 @@ async function registerBiometric(emp){
       timeout: 60000,
     }});
     emp.biometricId = bufToB64(cred.rawId);
-    await save('sq:employees', state.employees);
+    await saveEmployees();
     toast(state.lang==='ar'?'تم تفعيل البصمة ✅':'Biometrics enabled ✅');
     render();
   }catch(e){ toast(state.lang==='ar'?'تعذر تفعيل البصمة: '+e.message:'Failed: '+e.message); }
@@ -1462,7 +1472,7 @@ function attachEmployeeEvents(){
     try{
       const emp = findEmp(state.currentEmployee);
       emp.photo = await compressPhoto(f);
-      await save('sq:employees', state.employees);
+      await saveEmployees();
       toast('تم حفظ صورتك ✅'); render();
     }catch(e){ toast(e.message); }
   };
@@ -1883,7 +1893,7 @@ async function finalizeLeave(lv){
       } else {
         if(lv.type==='مرضية'){ emp.sickLeaveUsed = Math.round(((emp.sickLeaveUsed||0)+lv.days)*100)/100; }
         else { emp.leaveUsed = Math.round(((emp.leaveUsed||0)+lv.days)*100)/100; }
-        await save('sq:employees', state.employees);
+        await saveEmployees();
         dedNote=' (خُصمت من رصيد الإجازات)';
       }
     }
@@ -1922,7 +1932,7 @@ async function finalizeMug(m){
         const rec = state.attendance.find(a=>String(a.employeeId)===String(emp.id) && a.date===m.date);
         if(rec && rec.lateDeduction && !rec.lateDeductionReversed){
           const ld = rec.lateDeduction;
-          if(ld.fromLeave){ emp.leaveUsed = Math.max(0, Math.round(((emp.leaveUsed||0)-ld.fromLeave)*100)/100); await save('sq:employees', state.employees); }
+          if(ld.fromLeave){ emp.leaveUsed = Math.max(0, Math.round(((emp.leaveUsed||0)-ld.fromLeave)*100)/100); await saveEmployees(); }
           if(ld.dedIds && ld.dedIds.length){ state.deductions = state.deductions.filter(d=>!ld.dedIds.includes(d.id)); await save('sq:deductions', state.deductions); }
           rec.lateDeductionReversed = true; rec.lateExcused = true;
           await save('sq:attendance', state.attendance);
@@ -2326,7 +2336,7 @@ function attachAdminEvents(){
     try{
       const emp = findEmp(state.detailEmployeeId);
       emp.photo = await compressPhoto(f);
-      await save('sq:employees', state.employees);
+      await saveEmployees();
       await audit('تحديث صورة موظف', emp.name);
       toast('تم حفظ الصورة ✅'); render();
     }catch(e){ toast(e.message); }
@@ -2355,7 +2365,7 @@ async function saveDetailWorkHours(){
   const ws = document.getElementById('detWorkStart').value, we = document.getElementById('detWorkEnd').value;
   if(!ws || !we || timeToMin(we)<=timeToMin(ws)){ toast('حدد ساعات دوام صحيحة'); return; }
   emp.workStart = ws; emp.workEnd = we;
-  await save('sq:employees', state.employees);
+  await saveEmployees();
   await audit('تعديل ساعات دوام', `${emp.name}: ${ws} – ${we}`);
   await notify(String(emp.id), '🕒 تم تعديل ساعات دوامك', `دوامك الجديد: من ${ws} إلى ${we}`);
   toast('تم حفظ ساعات الدوام ✅'); render();
@@ -2365,7 +2375,7 @@ async function saveDetailSalary(){
   emp.baseSalary = parseFloat(document.getElementById('detBaseSalary').value)||0;
   emp.otherAllowances = parseFloat(document.getElementById('detAllow').value)||0;
   emp.healthInsurance = parseFloat(document.getElementById('detHealth').value)||0;
-  await save('sq:employees', state.employees);
+  await saveEmployees();
   await audit('تعديل راتب', `${emp.name}: أساسي ${emp.baseSalary} + بدلات ${emp.otherAllowances} - تأمين ${emp.healthInsurance}`);
   toast('تم حفظ بيانات الراتب ✅'); render();
 }
@@ -2375,14 +2385,14 @@ async function saveDetailLeave(){
   emp.leaveUsed = parseFloat(document.getElementById('detAnnualUsed').value)||0;
   emp.sickLeaveCap = parseFloat(document.getElementById('detSickCap').value)||0;
   emp.sickLeaveUsed = parseFloat(document.getElementById('detSickUsed').value)||0;
-  await save('sq:employees', state.employees);
+  await saveEmployees();
   toast('تم حفظ أرصدة الإجازات ✅'); render();
 }
 async function saveDetailAdvCaps(){
   const emp = findEmp(state.detailEmployeeId);
   emp.weeklyAdvCap = parseFloat(document.getElementById('detWeeklyCap').value)||0;
   emp.monthlyAdvCap = parseFloat(document.getElementById('detMonthlyCap').value)||0;
-  await save('sq:employees', state.employees);
+  await saveEmployees();
   toast('تم حفظ حدود السلف ✅'); render();
 }
 
@@ -2553,7 +2563,7 @@ async function saveEmployeeForm(){
   };
   if(editing){ const idx = state.employees.findIndex(e=>String(e.id)===String(editing)); state.employees[idx] = data; }
   else { state.employees.push(data); }
-  await save('sq:employees', state.employees);
+  await saveEmployees();
   await audit(editing?'تعديل بيانات موظف':'إضافة موظف', data.name+' (#'+data.id+')');
   closeModal(); toast(editing?'تم حفظ التعديلات ✅':'تم إضافة الموظف ✅');
   render();
@@ -2561,8 +2571,9 @@ async function saveEmployeeForm(){
 async function deleteEmployee(id){
   if(!confirm('هل أنت متأكد من حذف هذا الموظف؟ لا يمكن التراجع.')) return;
   const delEmp = findEmp(id);
+  PENDING_DELETED_EMP_IDS.add(String(id));
   state.employees = state.employees.filter(e=>String(e.id)!==String(id));
-  await save('sq:employees', state.employees);
+  await saveEmployees();
   await audit('حذف موظف', delEmp?delEmp.name+' (#'+id+')':('#'+id));
   closeModal(); state.screen='employees'; toast('تم حذف الموظف'); render();
 }
@@ -2823,7 +2834,6 @@ function rulesView(){
         <li>العمل الإضافي يبدأ بعد نهاية الدوام وتُحسب كل ساعة بمعدل 1.25 من أجر الساعة العادية — باستثناء المندوبين ومشرفي/مدراء المبيعات (نظامهم عمولة).</li>
         <li>أيام العطل الرسمية: العمل يُحسب <b>يوم بيوم ونصف</b> وساعة الإضافي <b>ساعة ونصف</b> — <b>فقط لمن يداوم فعليًا ويبصم دخول وخروج من داخل الشركة</b> (بدون المناديب)، ولا يُحسب تأخير في أيام العطل.</li>
         <li><b>المغادرة الصباحية (بداية الدوام)</b> الموافَق عليها من المدير <b>تُلغي خصم التأخير</b> لذلك اليوم — هذا هو نظام التأخير المعتمد.</li>
-        <li>يمكن للمدير تعديل ساعات الدوام لأي موظف من ملفه في الإعدادات.</li>
         <li>تصل تنبيهات للمشرف والمدير عند عدم تسجيل الحضور بعد 8:30 صباحًا أو عدم تسجيل الانصراف بعد نهاية الدوام.</li>
         <li>التأخير بعد فترة السماح يُخصم من رصيد الإجازة السنوية، وإذا انتهى الرصيد يبدأ الخصم مباشرة من الراتب.</li>
         <li>للإداريين: الحضور والانصراف عبر GPS ضمن نطاق 200م من مقر الشركة.</li>
@@ -3085,9 +3095,10 @@ function openPasswordsModal(){
   showModal(`
     <div class="modal-head"><h3>🔐 كلمات السر</h3><button class="modal-close" data-close>✕</button></div>
     <div class="section-title">حسابات الإدارة</div>
-    <p style="font-size:11px;color:var(--muted);margin:0 0 8px">دخول المدير والمشرف بكلمة سر فقط (بدون اسم مستخدم).</p>
+    <label class="field-label">كلمة سر المدير</label>
+    <input id="cfgAdminPass" value="${esc(state.config.adminPassword)}">
     <div class="grid2">
-      <div class="field"><label class="field-label">كلمة سر المدير</label><input id="cfgAdminPass" value="${esc(state.config.adminPassword)}"></div>
+      <div class="field"><label class="field-label">اسم مستخدم المشرف</label><input id="cfgSupUser" value="${esc(state.config.supervisorUser)}"></div>
       <div class="field"><label class="field-label">كلمة سر المشرف</label><input id="cfgSupPass" value="${esc(state.config.supervisorPassword)}"></div>
     </div>
     <button class="btn" id="saveCfgPassBtn">حفظ كلمات سر الإدارة</button>
@@ -3102,9 +3113,10 @@ function openPasswordsModal(){
   `, true);
   document.getElementById('saveCfgPassBtn').onclick = async ()=>{
     const ap = document.getElementById('cfgAdminPass').value.trim();
+    const su = document.getElementById('cfgSupUser').value.trim();
     const sp = document.getElementById('cfgSupPass').value.trim();
-    if(!ap || !sp){ toast('لا يمكن ترك أي حقل فارغًا'); return; }
-    state.config.adminPassword = ap; state.config.supervisorPassword = sp;
+    if(!ap || !su || !sp){ toast('لا يمكن ترك أي حقل فارغًا'); return; }
+    state.config.adminPassword = ap; state.config.supervisorUser = su; state.config.supervisorPassword = sp;
     await save('sq:config', state.config);
     await audit('تغيير كلمات سر الإدارة', 'تم تحديث بيانات دخول المدير/المشرف');
     closeModal(); toast('تم حفظ كلمات السر ✅ (تنطبق على كل الأجهزة)');
@@ -3114,10 +3126,15 @@ function openPasswordsModal(){
 }
 async function generateRandomPins(){
   if(!confirm('⚠️ سيتم تغيير الأرقام السرية لجميع الموظفين إلى أرقام عشوائية جديدة من 6 أرقام.\nالأرقام القديمة ستتوقف فورًا، ويجب توزيع الأرقام الجديدة على الموظفين.\nهل أنت متأكد؟')) return;
+  // اسحب أحدث قائمة موظفين من السيرفر أولًا — يمنع تجاهل موظفين أُضيفوا من جهاز آخر
+  if(FB_READY){
+    try{ const fresh = await fbLoad('sq:employees'); if(Array.isArray(fresh) && fresh.length) state.employees = fresh; }
+    catch(e){ console.error('تعذر تحديث القائمة من السيرفر قبل التوليد', e); }
+  }
   const used = new Set();
   const randPin = ()=>{ let p; do{ p = String(Math.floor(100000 + Math.random()*900000)); }while(used.has(p)); used.add(p); return p; };
   state.employees.forEach(e=>{ e.pin = randPin(); });
-  await save('sq:employees', state.employees);
+  await saveEmployees();
   const verified = await verifyEmployeesSaved(state.employees);
   await audit('توليد أرقام سرية', 'أرقام عشوائية جديدة (6 أرقام) لجميع الموظفين ('+state.employees.length+')'+(verified?' — تم التأكد من الحفظ':' — تعذّر التأكد من الحفظ!'));
   showModal(`
@@ -3151,7 +3168,7 @@ function openChangePinModal(empId){
     const p = document.getElementById('newPinInput').value.trim();
     if(!/^[0-9]{4,6}$/.test(p)){ toast('الرقم يجب أن يكون 4 إلى 6 أرقام'); return; }
     emp.pin = p;
-    await save('sq:employees', state.employees);
+    await saveEmployees();
     await audit('تغيير رقم سري', emp.name+' (#'+emp.id+')');
     await notify(String(emp.id), '🔐 تم تغيير رقمك السري', 'قام المدير بتحديث رقمك السري — استخدم الرقم الجديد عند الدخول القادم');
     closeModal(); toast('تم تغيير الرقم السري ✅');
@@ -3210,6 +3227,11 @@ async function importFromExcel(ev){
     try{
       const wb = XLSX.read(reader.result, {type:'array'});
       let updated=0, added=0, holReplaced=false;
+      // اسحب أحدث قائمة موظفين من السيرفر أولًا — يمنع تكرار موظف مضاف من جهاز آخر
+      if(FB_READY){
+        try{ const fresh = await fbLoad('sq:employees'); if(Array.isArray(fresh) && fresh.length) state.employees = fresh; }
+        catch(e){ console.error('تعذر تحديث القائمة من السيرفر قبل الاستيراد', e); }
+      }
       // — شيت الموظفين
       const empWs = wb.Sheets['الموظفون'];
       if(empWs){
@@ -3235,7 +3257,7 @@ async function importFromExcel(ev){
           if(r['نهاية الدوام']!=null){ const t = excelTimeToHM(r['نهاية الدوام']); if(t) emp.workEnd = t; }
           if(r['الرقم السري']!=null && /^[0-9]{4,6}$/.test(String(r['الرقم السري']).trim())) emp.pin = String(r['الرقم السري']).trim();
         });
-        await save('sq:employees', state.employees);
+        await saveEmployees();
         window.__empSaveVerified = await verifyEmployeesSaved(state.employees);
       }
       // — شيت العطل الرسمية
