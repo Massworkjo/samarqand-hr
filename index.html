@@ -320,7 +320,7 @@ function startLiveSync(){
    CONSTANTS
 ========================================================= */
 const TARGET_LAT = 31.9395125, TARGET_LNG = 35.9532656, GEOFENCE_M = 200;
-const APP_VERSION = "6.4";
+const APP_VERSION = "6.5";
 const ADMIN_PASSWORD = "886622";
 const SUPERVISOR_USER = "supervisor", SUPERVISOR_PASSWORD = "7890";
 function randomPin6(){ return String(Math.floor(100000 + Math.random()*900000)); }
@@ -1482,7 +1482,16 @@ function doClock(type){
   const emp = findEmp(state.currentEmployee);
   const statusEl = document.getElementById('geoStatus');
   if(emp.category==='مندوب'){
-    recordClock(emp, type, null, null, null);
+    // نحاول تسجيل الموقع للمندوب أيضًا (بدون تقييد وبدون تعطيل التسجيل إذا تعذّر)
+    if(navigator.geolocation){
+      if(statusEl) statusEl.textContent = '📡 يتم تحديد موقعك...';
+      navigator.geolocation.getCurrentPosition(pos=>{
+        recordClock(emp, type, null, null, null, pos.coords.latitude, pos.coords.longitude);
+      }, ()=>{ recordClock(emp, type, null, null, null, null, null); },
+      {enableHighAccuracy:true, timeout:6000, maximumAge:60000});
+    } else {
+      recordClock(emp, type, null, null, null, null, null);
+    }
     return;
   }
   if(!navigator.geolocation){ toast('المتصفح لا يدعم تحديد الموقع'); return; }
@@ -1491,14 +1500,14 @@ function doClock(type){
     const {latitude, longitude} = pos.coords;
     const dist = Math.round(distanceMeters(latitude, longitude, TARGET_LAT, TARGET_LNG));
     const within = dist <= GEOFENCE_M;
-    recordClock(emp, type, dist, within, true);
+    recordClock(emp, type, dist, within, true, latitude, longitude);
   }, err=>{
     statusEl.textContent = '⚠️ تعذر الوصول للموقع: '+err.message;
     toast('فعّل صلاحية الموقع من المتصفح للمتابعة');
   }, {enableHighAccuracy:true, timeout:10000});
 }
 
-async function recordClock(emp, type, dist, within, geoTracked){
+async function recordClock(emp, type, dist, within, geoTracked, lat, lng){
   let rec = todaysRecord(emp.id);
   if(!rec){ rec = {id:'ATT-'+Date.now(), employeeId: emp.id, employeeName: emp.name, date: todayStr()}; state.attendance.push(rec); }
   const t = nowTime();
@@ -1506,7 +1515,7 @@ async function recordClock(emp, type, dist, within, geoTracked){
   const hol = isHoliday(todayStr());
   const holidayWork = !!hol && !isFriday(todayStr());
   if(type==='in'){
-    rec.timeIn = t; rec.withinIn = within; rec.distIn = dist; rec.geoTracked = geoTracked;
+    rec.timeIn = t; rec.withinIn = within; rec.distIn = dist; rec.geoTracked = geoTracked; rec.latIn = lat!=null?lat:null; rec.lngIn = lng!=null?lng:null;
     if(holidayWork) rec.holiday = hol.name;
     // مكافأة العطلة الرسمية تُمنح عند تسجيل الانصراف — فقط لمن يبصم دخول وخروج من داخل الشركة
     // lateness (لا تُحسب أيام العطل الرسمية)
@@ -1536,7 +1545,7 @@ async function recordClock(emp, type, dist, within, geoTracked){
     }
     if(isRep) await notify(['admin','supervisor'], '📍 حضور مندوب', `${emp.name} سجل حضوره الساعة ${t}${rec.lateMinutes?(' (متأخر '+rec.lateMinutes+' دقيقة)'):''}`, null, {k:'att'});
   } else {
-    rec.timeOut = t; rec.withinOut = within; rec.distOut = dist;
+    rec.timeOut = t; rec.withinOut = within; rec.distOut = dist; rec.latOut = lat!=null?lat:null; rec.lngOut = lng!=null?lng:null;
     // العطلة الرسمية: يوم بيوم ونصف — فقط لمن بصم دخولًا وخروجًا من داخل نطاق الشركة (بدون المناديب)
     if(holidayWork && !isRep && !rec.holidayBonusGiven){
       if(rec.withinIn && within){
@@ -1806,9 +1815,10 @@ function supervisorHome(){
 function supervisorAttendance(){
   const today = todayStr();
   const recs = state.attendance.filter(a=>a.date===today);
+  const mapLink = (lat,lng)=> (lat!=null&&lng!=null) ? `<a href="https://www.google.com/maps?q=${lat},${lng}" target="_blank" rel="noopener" style="text-decoration:none">📍</a>` : '';
   return `<div class="card"><h3>🕒 حضور اليوم — ${today}</h3>
     ${recs.length===0 ? emptyLine('لا يوجد تسجيلات حضور اليوم بعد') :
-      recs.map(r=>`<div class="row"><span class="lbl">${esc(r.employeeName)}</span><span class="val">${r.timeIn||'—'}${r.timeOut?(' → '+r.timeOut):''} ${r.withinIn===false?' ⚠️':''}</span></div>`).join('')}
+      recs.map(r=>`<div class="row"><span class="lbl">${esc(r.employeeName)}</span><span class="val">${r.timeIn||'—'}${mapLink(r.latIn,r.lngIn)}${r.timeOut?(' → '+r.timeOut+mapLink(r.latOut,r.lngOut)):''} ${r.withinIn===false?' ⚠️':''}</span></div>`).join('')}
     </div>`;
 }
 function attachSupervisorEvents(){
@@ -2215,11 +2225,12 @@ function employeeDetailScreen(emp){
 
 function adminAttendance(){
   const sorted = state.attendance.slice().sort((a,b)=> b.date.localeCompare(a.date));
+  const mapLink = (lat,lng)=> (lat!=null&&lng!=null) ? `<a href="https://www.google.com/maps?q=${lat},${lng}" target="_blank" rel="noopener" style="text-decoration:none">📍</a>` : '';
   return `<div class="card"><h3>🕒 سجل الحضور والانصراف</h3>
     ${sorted.length===0 ? emptyLine('لا يوجد سجلات بعد') :
       sorted.slice(0,60).map(r=>`
       <div class="row"><span class="lbl">${esc(r.employeeName)} — ${r.date}</span>
-      <span class="val">${r.timeIn||'—'}${r.timeOut?(' → '+r.timeOut):''} ${r.lateMinutes?(' ⏰'+r.lateMinutes+'د'):''} ${(r.withinIn===false||r.withinOut===false)?'⚠️':''}</span></div>`).join('')}
+      <span class="val">${r.timeIn||'—'}${mapLink(r.latIn,r.lngIn)}${r.timeOut?(' → '+r.timeOut+mapLink(r.latOut,r.lngOut)):''} ${r.lateMinutes?(' ⏰'+r.lateMinutes+'د'):''} ${(r.withinIn===false||r.withinOut===false)?'⚠️':''}</span></div>`).join('')}
     </div>`;
 }
 
@@ -2873,6 +2884,7 @@ function rulesView(){
       <ul>
         <li>مندوبو المبيعات يسجلون حضورهم وانصرافهم من أي موقع دون قيد جغرافي، ودوامهم 8:00 ص – 5:00 م.</li>
         <li>يصل إشعار للمشرف والمدير عند تسجيل المندوب حضوره وانصرافه.</li>
+        <li>يُسجَّل موقع الموظف عند كل بصمة حضور أو انصراف، ويظهر للمدير والمشرف داخل التطبيق وفي ملف الإكسل الشامل (مع رابط مباشر لموقع Google Maps).</li>
         <li>انصراف المندوب من السوق قبل نهاية دوامه يُسجَّل تلقائيًا كمغادرة من وقت الخروج حتى 5:00 م، بانتظار قرار المدير.</li>
         <li>لا يوجد عمل إضافي للمناديب (نظام عمولة).</li>
         <li>قيادة مركبات الشركة بسرعة تتجاوز الحد المسموح تُعتبر مخالفة.</li>
@@ -2955,7 +2967,11 @@ async function exportAllToExcel(){
   addSheet('الحضور', state.attendance.map(r=>({
     'التاريخ':r.date,'الرقم الوظيفي':r.employeeId,'الاسم':r.employeeName,'حضور':r.timeIn||'','انصراف':r.timeOut||'',
     'تأخير (دقيقة)':r.lateMinutes||0,'إضافي (دقيقة)':r.overtimeMinutes||0,'قيمة الإضافي':r.overtimePay||0,
-    'معدل الإضافي':r.overtimeRate||'','عطلة رسمية':r.holiday||'','داخل النطاق':r.geoTracked===null?'مندوب':(r.withinIn===false?'خارج النطاق':'نعم'),'المسافة (م)':r.distIn||''})));
+    'معدل الإضافي':r.overtimeRate||'','عطلة رسمية':r.holiday||'','داخل النطاق':r.geoTracked===null?'مندوب':(r.withinIn===false?'خارج النطاق':'نعم'),'المسافة (م)':r.distIn||'',
+    'موقع الحضور (خط العرض، الطول)':(r.latIn!=null&&r.lngIn!=null)?(r.latIn+', '+r.lngIn):'',
+    'رابط موقع الحضور':(r.latIn!=null&&r.lngIn!=null)?('https://www.google.com/maps?q='+r.latIn+','+r.lngIn):'',
+    'موقع الانصراف (خط العرض، الطول)':(r.latOut!=null&&r.lngOut!=null)?(r.latOut+', '+r.lngOut):'',
+    'رابط موقع الانصراف':(r.latOut!=null&&r.lngOut!=null)?('https://www.google.com/maps?q='+r.latOut+','+r.lngOut):''})));
   addSheet('السلف', state.advances.map(a=>({
     'التاريخ':a.date,'الاسم':a.employeeName,'المبلغ':a.amount,'الحالة':a.status,
     'موافقة المشرف':a.supStatus||'—','موافقة المدير':a.admStatus||'—',
